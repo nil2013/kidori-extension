@@ -1,0 +1,46 @@
+# yaml-language-server: $schema=./project.schema.json
+#
+# 書棚（設計メモ）
+# ------------------------------------------------------------
+# 側板2枚はパイン集成材（1820×910×18の定尺）から、棚板は1x4材6Fから切り出す。
+# SPECS.md §4a の掲載例は側板長さが原材長を超える不整合な数値だったため、
+# ここでは実際に置ける寸法（幅250×奥行900の書棚）に直して自己整合させている。
+# kerf・edgeTrimは仮値。手持ち丸鋸の刃厚を実測したら settings.kerf を更新すること。
+meta: { project: 書棚, units: mm, schemaVersion: "0.2" }
+
+settings:
+  kerf: 3            # 鋸刃厚（mm、仮値）
+  edgeTrim: 5         # 木口の捨て代（mm）
+  candidates: 3
+  selectedPlan: null  # 案を確定したら `kidori select A` のように書き換える
+
+stocks:
+  # 側板用: パイン集成材の定尺（サブロク合板ではなく1820×910の集成材を使う想定）
+  - { id: pine-18, label: "パイン集成材18mm", kind: sheet, length: 1820, width: 910, thickness: 18, price: 6356 }
+  # 棚板用: 1x4材 6F
+  - { id: 1x4-6f,  label: "1×4材 6F",         kind: bar,   length: 1820, width: 89,  thickness: 19, price: 382 }
+
+parts:
+  # 側板2枚。最下段棚を受ける通し溝と、配線用の止め溝を1本ずつ入れている。
+  - id: side-0
+    label: 側板
+    qty: 2
+    stock: pine-18
+    length: 900
+    width: 250
+    features:
+      # 最下段棚受けの通し溝（幅方向いっぱいに貫通させる）
+      - { type: groove, face: front, dir: across, pos: 200, width: 7, depth: 6, end: through }
+      # 配線・持ち手用の止め溝（板の両端は残す）
+      - { type: groove, face: back, dir: along, pos: 125, width: 7, depth: 6, end: stopped, from: 50, to: 850 }
+      # 棚受けダボ穴（貫通）
+      - { type: hole, face: front, x: 450, y: 50, dia: 5 }
+      # 化粧ビス下穴（止め穴、深さ10mm）
+      - { type: hole, face: front, x: 450, y: 200, dia: 8, depth: 10 }
+
+  # 棚板3枚。1x4材から切り出す（幅は原材幅そのまま使うため width は省略）。
+  - id: shelf-0
+    label: 棚板
+    qty: 3
+    stock: 1x4-6f
+    length: 550
