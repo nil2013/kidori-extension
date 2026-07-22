@@ -38,6 +38,13 @@ from typing import Iterable, Union
 
 Number = Union[int, float]
 
+#: 文書ルートに付与するデフォルトの font-family。
+#: 日本語（ヘッダ・注記・ラベル）を含む出力のため、CJK グリフを持つフォントへの
+#: フォールバック連鎖を macOS（Hiragino Sans）・Linux（Noto Sans CJK JP）の
+#: 両対応で指定する。これが無いと cairosvg での PNG 変換時に日本語が
+#: 豆腐（□）化する（SPECS §6: PNG は印刷・スマホでの現場参照用のため判読必須）。
+DEFAULT_FONT_FAMILY = "Hiragino Sans, Noto Sans CJK JP, sans-serif"
+
 
 # ---------------------------------------------------------------------------
 # エスケープ・数値整形
@@ -272,12 +279,16 @@ class SvgDocument:
         width: 文書の width 属性値（px）。
         height: 文書の height 属性値（px）。
         view_box: ``(min_x, min_y, width, height)``。省略時は ``(0, 0, width, height)``。
+        font_family: ルート ``<svg>`` に付与する font-family（子要素へ継承される）。
+            デフォルトは :data:`DEFAULT_FONT_FAMILY`（CJK 対応フォールバック連鎖）。
+            None を指定すると属性を付与しない。
     """
 
     width: Number
     height: Number
     view_box: tuple[Number, Number, Number, Number] | None = None
     children: list[Element] = field(default_factory=list)
+    font_family: str | None = DEFAULT_FONT_FAMILY
 
     def add(self, *elements: Element) -> "SvgDocument":
         """子要素を末尾に追加する（メソッドチェーン用に self を返す）。"""
@@ -290,14 +301,17 @@ class SvgDocument:
 
         vb = self.view_box or (0, 0, self.width, self.height)
         view_box_str = " ".join(_format_number(v) for v in vb)
+        attrs: dict[str, object] = {
+            "xmlns": "http://www.w3.org/2000/svg",
+            "viewBox": view_box_str,
+            "width": self.width,
+            "height": self.height,
+        }
+        if self.font_family is not None:
+            attrs["font-family"] = self.font_family
         return Element(
             tag="svg",
-            attrs={
-                "xmlns": "http://www.w3.org/2000/svg",
-                "viewBox": view_box_str,
-                "width": self.width,
-                "height": self.height,
-            },
+            attrs=attrs,
             children=list(self.children),
         )
 

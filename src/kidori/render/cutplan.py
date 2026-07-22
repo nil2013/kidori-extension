@@ -55,9 +55,13 @@ HEADER_HEIGHT = 26.0
 PANEL_TITLE_HEIGHT = 20.0
 PANEL_GAP = 24.0
 
-#: 部材矩形内に「①id」＋寸法の2行を収められる最小 px（幅・高さ）。
+#: 部材矩形内に「①id（＋label）」＋寸法の2行を収められる最小 px（幅・高さ）。
 LABEL_FULL_MIN_W = 60.0
 LABEL_FULL_MIN_H = 28.0
+#: 1行目ラベルの推定文字幅係数（ASCII。dimension.CHAR_WIDTH_RATIO と同じ 0.62）。
+LABEL_CHAR_RATIO_ASCII = 0.62
+#: 全角文字（CJK 等）の推定文字幅係数。全角はほぼ 1em とみなす。
+LABEL_CHAR_RATIO_WIDE = 1.0
 #: 番号のみなら収められる最小 px。これ未満は矩形外に引出線で退避する。
 LABEL_NUMBER_MIN_W = 18.0
 LABEL_NUMBER_MIN_H = 14.0
@@ -159,17 +163,35 @@ def _edge_trim_defs() -> Element:
 # ---------------------------------------------------------------------------
 
 
+def _estimated_text_width(content: str, font_size: float) -> float:
+    """ラベル文字列の推定描画幅（px）を返す（ASCII は 0.62em、全角は 1em とみなす）。"""
+
+    width = 0.0
+    for ch in content:
+        ratio = LABEL_CHAR_RATIO_ASCII if ord(ch) < 0x0100 else LABEL_CHAR_RATIO_WIDE
+        width += ratio * font_size
+    return width
+
+
 def _part_label_elements(
     *,
     seq_num: int,
     part_id: str,
+    part_label: str,
     dims_text: str,
     rect_x: float,
     rect_y: float,
     rect_w: float,
     rect_h: float,
 ) -> list[Element]:
-    """部材矩形の中央（または矩形外・引出線付き）にラベルを配置する。"""
+    """部材矩形の中央（または矩形外・引出線付き）にラベルを配置する。
+
+    縮退規則（SPECS §6「部材 ID・ラベル・寸法を記入」＋設計正本 §5 の実装者判断）:
+        1. 矩形が十分大きい: 1行目「① id label」＋2行目に寸法。
+           1行目の推定幅が矩形幅を超える場合は label を落とし「① id」に縮退。
+        2. 番号のみ収まる大きさ: 「①」のみ。
+        3. それ未満: 矩形外へ番号を引出線付きで退避。
+    """
 
     cx = rect_x + rect_w / 2
     cy = rect_y + rect_h / 2
@@ -177,11 +199,14 @@ def _part_label_elements(
     elements: list[Element] = []
 
     if rect_w >= LABEL_FULL_MIN_W and rect_h >= LABEL_FULL_MIN_H:
+        full_line = f"{seq_label} {part_id} {part_label}" if part_label else f"{seq_label} {part_id}"
+        if _estimated_text_width(full_line, FONT_SIZE_BODY) > rect_w:
+            full_line = f"{seq_label} {part_id}"
         elements.append(
             text(
                 cx,
                 cy - 2,
-                f"{seq_label} {part_id}",
+                full_line,
                 font_size=FONT_SIZE_BODY,
                 text_anchor="middle",
                 data_role="seq-label",
@@ -270,6 +295,7 @@ def _render_bar_unit(
             _part_label_elements(
                 seq_num=seq_num,
                 part_id=part.id,
+                part_label=part.label,
                 dims_text=_fmt(length),
                 rect_x=sx,
                 rect_y=sy,
@@ -357,6 +383,7 @@ def _render_sheet_unit(
             _part_label_elements(
                 seq_num=seq_num,
                 part_id=part.id,
+                part_label=part.label,
                 dims_text=f"{_fmt(plen)}×{_fmt(pwid)}",
                 rect_x=sx,
                 rect_y=sy,

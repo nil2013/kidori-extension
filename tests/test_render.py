@@ -186,6 +186,12 @@ def test_cutplan_bar_panel_parses_and_counts_match():
     # 3枚とも矩形が十分大きいスケールになっているため寸法ラベルも出る想定。
     assert len(part_dims) == 3
 
+    # SPECS §6: 各部材矩形に部材 ID・ラベル・寸法を記入。
+    # ラベル行は「① shelf-0 棚板0」形式で id と label を併記する。
+    label_texts = ["".join(el.itertext()) for el in seq_labels]
+    assert sum(1 for t in label_texts if "shelf-0" in t and "棚板0" in t) == 2
+    assert sum(1 for t in label_texts if "shelf-1" in t and "棚板1" in t) == 1
+
     # kerf 帯: 3配置の隣接ペアは2組。
     kerf_bands = _find_by_role(root, "kerf-band", "rect")
     assert len(kerf_bands) == 2
@@ -242,6 +248,10 @@ def test_cutplan_sheet_panel_parses_and_counts_match():
 
     assert len(part_rects) == 2
     assert len(seq_labels) == 2
+
+    # SPECS §6: 部材矩形に part.label（側板0）が併記されること。
+    label_texts = ["".join(el.itertext()) for el in seq_labels]
+    assert sum(1 for t in label_texts if "side-0" in t and "側板0" in t) == 2
 
     # 2D の kerf 帯: 部材ごとに右・上の2本 = 4本。
     kerf_bands = _find_by_role(root, "kerf-band", "rect")
@@ -315,3 +325,24 @@ def test_circled_number_boundary():
     assert circled_number(1) == "①"
     assert circled_number(20) == "⑳"
     assert circled_number(21) == "(21)"
+
+
+# ---------------------------------------------------------------------------
+# フォント指定（PNG 変換時の日本語判読性）
+# ---------------------------------------------------------------------------
+
+
+def test_svg_root_has_cjk_font_family():
+    """ルート svg に CJK 対応の font-family が付与されること
+    （cairosvg での PNG 変換時に日本語が豆腐化しないための担保）。"""
+
+    plan, project = make_bar_plan_and_project(selected_plan=None)
+    for svg_text in (
+        render_cutplan(plan, project, make_bar_summary()),
+        render_partcard(*make_part_with_features()),
+    ):
+        root = ET.fromstring(svg_text)
+        font_family = root.attrib.get("font-family", "")
+        assert font_family, "ルート svg に font-family がない"
+        assert "Noto Sans CJK JP" in font_family
+        assert "sans-serif" in font_family
