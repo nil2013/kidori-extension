@@ -2,6 +2,7 @@
 name = "kidori"
 version = "0.1.0"
 description = "規格材の木取り図・加工指示図ジェネレータ"
+readme = "README.md"
 authors = [
     { name = "Tomoumi NISHIMURA", email = "lue.gsk.2012@gmail.com" }
 ]
