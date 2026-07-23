@@ -113,6 +113,14 @@ export interface ExactInfo {
 export interface Summary {
   schemaVersion: string;
   generatedAt: string;
+  /** 正本ファイルのベース名（例 "project.yaml"）。out/ が由来する正本の識別用。 */
+  sourceFile: string;
+  /**
+   * 正本ファイル（バイト列）の SHA-256（hex）。読めなければ "unknown"。
+   * `shasum -a 256 <正本>` の出力と一致すれば、この out/ が現行正本由来だと
+   * 外形的に判定できる（S-11）。
+   */
+  sourceSha256: string;
   project: string;
   selectedPlan: string | null;
   rank: RankKey[];
@@ -382,9 +390,11 @@ export function summarize(plan: Plan, project: Project): PlanSummary {
 /**
  * settings.rank の優先順で案を比較する。
  *
- * - cost: 概算費用の昇順（安いほど上位）。両者とも null の場合はこの基準を
- *   スキップする（parts[].stock が固定バインドのため、使用規格集合は案間で
- *   同一であり、cost は全案 null か全案非 null になる）。
+ * - cost: 概算費用の昇順（安いほど上位）。ただし比較は両案とも
+ *   costComplete === true のときのみ行う（S-05）。どちらかで規格の一部に
+ *   price 欠落がある場合、部分合計での比較は実価格と順位が逆転しうるため、
+ *   この基準を丸ごとスキップして次の基準（歩留まり等）に委ねる。両者とも
+ *   cost が null の場合も同様にスキップする。
  * - waste: 歩留まり（totals.yield）の降順（高いほど上位）。
  * - cuts: カット回数（totals.cutCount）の昇順（少ないほど上位）。
  *
@@ -399,7 +409,13 @@ export function comparePlanSummaries(
   for (const key of rankKeys) {
     let diff = 0;
     if (key === "cost") {
-      if (a.totals.cost !== null && b.totals.cost !== null) {
+      // S-05: 両案とも費用が確定（全使用規格に price あり）のときのみ比較する。
+      if (
+        a.totals.cost !== null &&
+        b.totals.cost !== null &&
+        a.totals.costComplete &&
+        b.totals.costComplete
+      ) {
         diff = a.totals.cost - b.totals.cost;
       }
     } else if (key === "waste") {
@@ -449,6 +465,8 @@ export function rankPlans(
  * @param generatedAt ISO 形式の生成時刻文字列（呼び出し側が現在時刻を渡す）。
  * @param exact 厳密探索の実行結果メタ情報。
  * @param rankedPlans rankPlans() が返した rank 順の案 ID 一覧。
+ * @param sourceFile 正本ファイルのベース名。
+ * @param sourceSha256 正本ファイルの SHA-256（hex、読めなければ "unknown"）。
  */
 export function buildSummary(
   plansSummaries: PlanSummary[],
@@ -456,10 +474,14 @@ export function buildSummary(
   generatedAt: string,
   exact: ExactInfo,
   rankedPlans: string[],
+  sourceFile: string,
+  sourceSha256: string,
 ): Summary {
   return {
     schemaVersion: project.meta.schemaVersion,
     generatedAt,
+    sourceFile,
+    sourceSha256,
     project: project.meta.project,
     selectedPlan: project.settings.selectedPlan,
     rank: project.settings.rank,

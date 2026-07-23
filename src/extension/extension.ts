@@ -206,8 +206,14 @@ async function buildProject(projectPath: string): Promise<void> {
     } else {
       const msg = e instanceof Error ? e.message : String(e);
       channel.appendLine(`[build] エラー: ${msg}`);
+      preview.showError(`ビルドエラー:\n${msg}`);
       void vscode.window.showErrorMessage(`kidori: ${msg}`);
     }
+    // ビルド失敗時は out/ に失敗マーカーが残り、旧図面は最新ではない旨を案内する。
+    channel.appendLine(
+      "[build] 失敗しました。out/BUILD-FAILED.txt に詳細と正本ハッシュを記録しました" +
+        "（out/ の図面は最新の正本を反映していません）",
+    );
   }
 }
 

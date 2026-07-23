@@ -9,15 +9,23 @@
  *   ④ generatePlans（ヒューリスティック案 A/B/C）
  *   ⑤ runExact（settings.exact に応じた厳密探索。案 X または最適一致判定）
  *   ⑥ metrics（summarize / rankPlans / buildSummary）— 推奨案★の決定
- *   ⑦ plan-X.svg + parts/*.svg
- *   ⑧ PNG（resvg-js。利用不可なら警告してスキップ）
- *   ⑨ summary.json（generatedAt は build 時刻の ISO 文字列）
- *   ⑩ 管理対象パターン（plan-*.svg/png, parts/*.svg/png, summary.json）の
- *      陳腐化ファイル削除（管理外ファイルには触れない）
+ *   ⑦ plan-X.svg + parts/*.svg（Phase 1: 全てメモリ上に用意）
+ *   ⑧ PNG（resvg-js。PNG 有効かつ利用不可なら KidoriError。S-09）
+ *   ⑨ summary.json（generatedAt は build 時刻の ISO 文字列。正本ハッシュ付き）
+ *   ⑩ Phase 2: tmp+rename でアトミックにコミット。summary.json を最後に書く
+ *   ⑪ 管理対象パターン（plan-*.svg/png, parts/*.svg/png, summary.json）の
+ *      陳腐化ファイル削除（管理外ファイルには触れない）＋失敗マーカー除去
+ *
+ * out/ の現行正本反映保証（S-11 / S-12）:
+ *   - build() 全体を try/catch し、例外時は out/BUILD-FAILED.txt を書いて rethrow。
+ *     マーカーの有無で「直近ビルドがプロセス内で完走したか」を判定できる。
+ *   - summary.json に正本の SHA-256 を載せ、`shasum` との照合で out/ が現行正本
+ *     由来かを外形判定できる（プロセス強制終了などマーカーが書けない場合の分担）。
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 
 import { Issue, KidoriError, ProjectError } from "./errors";
 import { extractStockIds, loadProject, readRaw } from "./loader";
@@ -36,8 +44,17 @@ import {
 } from "./metrics";
 import { renderCutplan } from "./render/cutplan";
 import { renderPartcard } from "./render/partcard";
-import { svgToPng } from "./png";
+import { pngAvailable, svgToPngBuffer } from "./png";
 import type { Project, RankKey } from "./types";
+
+/** 出力先に書き込む前の成果物（name は outDir 相対、区切りは "/"）。 */
+interface Artifact {
+  name: string;
+  data: string | Uint8Array;
+}
+
+/** ビルド失敗マーカーのファイル名。存在＝直近ビルドが完走していない。 */
+const FAILURE_MARKER = "BUILD-FAILED.txt";
 
 /** モードライン（YAML 先頭行）の想定プレフィックス。 */
 const MODELINE_PREFIX = "# yaml-language-server: $schema=";
@@ -120,6 +137,69 @@ function safeChildPath(dir: string, fileName: string): string {
     );
   }
   return resolved;
+}
+
+/** 正本ファイルのバイト列から SHA-256（hex）を求める。読めなければ "unknown"。 */
+function computeSourceSha256(projectPath: string): string {
+  try {
+    // パース用の readRaw とは別に、正本のバイト列そのものをハッシュ化する
+    // （TOCTOU の窓は運用上無視できるものとして、2回読みを許容する）。
+    const bytes = fs.readFileSync(projectPath);
+    return createHash("sha256").update(bytes).digest("hex");
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * ビルド失敗マーカー out/BUILD-FAILED.txt を書き出す。out/ が未作成なら作る。
+ * マーカー書き込み自体の失敗はログして握りつぶす（元の例外の伝播を妨げない）。
+ */
+function writeFailureMarker(
+  outDir: string,
+  error: unknown,
+  sourceFile: string,
+  sourceSha256: string,
+  log: (m: string) => void,
+): void {
+  try {
+    fs.mkdirSync(outDir, { recursive: true });
+    const reason = error instanceof Error ? error.message : String(error);
+    const content =
+      "この out/ の図面は最新の正本を反映していません（ビルド失敗）。\n" +
+      "最新の図面を得るには、正本を修正して再ビルドしてください。\n" +
+      `failedAt: ${isoNow()}\n` +
+      `source: ${sourceFile}\n` +
+      `sourceSha256: ${sourceSha256}\n` +
+      `reason: ${reason}\n`;
+    fs.writeFileSync(path.join(outDir, FAILURE_MARKER), content, "utf-8");
+  } catch (e) {
+    log(
+      `[警告] ビルド失敗マーカーの書き込みに失敗しました: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+}
+
+/** ディレクトリ直下に残った *.kidori-tmp（前回コミットの中断残骸）を掃除する。 */
+function removeTmpResidue(dir: string): void {
+  if (!fs.existsSync(dir)) {
+    return;
+  }
+  for (const name of fs.readdirSync(dir)) {
+    if (name.endsWith(".kidori-tmp")) {
+      fs.unlinkSync(path.join(dir, name));
+    }
+  }
+}
+
+/** 1成果物を tmp へ書いてから rename でアトミックに確定する（Phase 2）。 */
+function writeArtifactAtomic(outDir: string, art: Artifact): void {
+  const target = safeChildPath(outDir, art.name);
+  const tmp = target + ".kidori-tmp";
+  fs.writeFileSync(tmp, art.data);
+  fs.renameSync(tmp, target);
 }
 
 function cleanupStale(
@@ -300,13 +380,35 @@ function generateAllPlans(project: Project): {
  */
 export function build(projectPath: string, options: BuildOptions = {}): BuildResult {
   const log = options.log ?? ((m: string) => console.error(m));
-  const png = options.png ?? true;
-  const pngScale = options.pngScale ?? 2.0;
 
   projectPath = path.resolve(projectPath);
   const outDir = options.outDir
     ? path.resolve(options.outDir)
     : path.join(path.dirname(projectPath), "out");
+
+  const sourceFile = path.basename(projectPath);
+  const sourceSha256 = computeSourceSha256(projectPath);
+
+  // S-11: build() 全体を try/catch し、いかなる例外でも out/ に失敗マーカーを
+  // 残してから rethrow する（マーカーなし＝直近ビルド完走の不変条件）。
+  try {
+    return buildInner(projectPath, outDir, sourceFile, sourceSha256, options, log);
+  } catch (e) {
+    writeFailureMarker(outDir, e, sourceFile, sourceSha256, log);
+    throw e;
+  }
+}
+
+function buildInner(
+  projectPath: string,
+  outDir: string,
+  sourceFile: string,
+  sourceSha256: string,
+  options: BuildOptions,
+  log: (m: string) => void,
+): BuildResult {
+  const png = options.png ?? true;
+  const pngScale = options.pngScale ?? 2.0;
   const partsDir = path.join(outDir, "parts");
 
   checkModeline(projectPath, log);
@@ -361,40 +463,47 @@ export function build(projectPath: string, options: BuildOptions = {}): BuildRes
     generatedAt,
     exactInfo,
     recommendationActive ? rankedPlans : [],
+    sourceFile,
+    sourceSha256,
   );
 
-  fs.mkdirSync(outDir, { recursive: true });
-  fs.mkdirSync(partsDir, { recursive: true });
+  // ---- Phase 1（純メモリ）: 全 SVG・全 PNG・summary.json を artifacts に集める ----
+  // out/ には一切書かない。この段階での例外（PNG 変換・パス検証等）は build() の
+  // try/catch へ伝播し、out/ を無変更のまま失敗マーカーだけが残る（S-12）。
 
+  // S-09: PNG が確定要件のため、PNG 有効なのに resvg-js が使えなければここで失敗させる。
+  if (png && !pngAvailable()) {
+    throw new KidoriError(
+      "PNG 生成に必要な @resvg/resvg-js が利用できません。" +
+        "PNG を生成しない場合は CLI で --no-png、" +
+        "拡張では設定 kidori.png.enabled: false を指定してください。",
+    );
+  }
+
+  const artifacts: Artifact[] = [];
   const managedSvg = new Set<string>();
   const managedPng = new Set<string>();
   const svgPaths: string[] = [];
   const pngPaths: string[] = [];
 
   // ⑦ 木取り図 SVG（＋⑧ PNG）。
-  let pngWarned = false;
-  const emitPng = (svgText: string, pngPath: string, managedName: string): void => {
-    if (!png) {
-      return;
-    }
-    if (svgToPng(svgText, pngPath, pngScale)) {
-      managedPng.add(managedName);
-      pngPaths.push(pngPath);
-    } else if (!pngWarned) {
-      log("[警告] resvg-js が利用できないため PNG 生成をスキップしました");
-      pngWarned = true;
-    }
-  };
-
   plans.forEach((plan, i) => {
     const svgText = renderCutplan(plan, project, summaries[i]);
     const svgName = `plan-${plan.id}.svg`;
-    const svgPath = path.join(outDir, svgName);
-    fs.writeFileSync(svgPath, svgText, "utf-8");
+    artifacts.push({ name: svgName, data: svgText });
     managedSvg.add(svgName);
-    svgPaths.push(svgPath);
+    svgPaths.push(path.join(outDir, svgName));
 
-    emitPng(svgText, path.join(outDir, `plan-${plan.id}.png`), `plan-${plan.id}.png`);
+    if (png) {
+      const buf = svgToPngBuffer(svgText, pngScale);
+      // pngAvailable() を上で確認済みのため buf は非 null（防御的に null をスキップ）。
+      if (buf !== null) {
+        const pngName = `plan-${plan.id}.png`;
+        artifacts.push({ name: pngName, data: buf });
+        managedPng.add(pngName);
+        pngPaths.push(path.join(outDir, pngName));
+      }
+    }
   });
 
   // 加工指示図: selectedPlan 設定時のみヘッダに配置番号（Plan.seq）を渡す。
@@ -428,22 +537,47 @@ export function build(projectPath: string, options: BuildOptions = {}): BuildRes
       seqLabels,
       planId: selectedPlanId,
     });
-    const svgName = `${part.id}.svg`;
-    const svgPath = safeChildPath(partsDir, svgName);
-    fs.writeFileSync(svgPath, svgText, "utf-8");
-    managedSvg.add(`parts/${svgName}`);
-    svgPaths.push(svgPath);
-    partCards.push({ id: part.id, label: part.label, svgPath });
+    // safeChildPath で part.id に不正な区切りが無いことを Phase 1 中に検証する。
+    const svgAbs = safeChildPath(partsDir, `${part.id}.svg`);
+    const svgName = `parts/${part.id}.svg`;
+    artifacts.push({ name: svgName, data: svgText });
+    managedSvg.add(svgName);
+    svgPaths.push(svgAbs);
+    partCards.push({ id: part.id, label: part.label, svgPath: svgAbs });
 
-    emitPng(svgText, safeChildPath(partsDir, `${part.id}.png`), `parts/${part.id}.png`);
+    if (png) {
+      const buf = svgToPngBuffer(svgText, pngScale);
+      if (buf !== null) {
+        const pngAbs = safeChildPath(partsDir, `${part.id}.png`);
+        artifacts.push({ name: `parts/${part.id}.png`, data: buf });
+        managedPng.add(`parts/${part.id}.png`);
+        pngPaths.push(pngAbs);
+      }
+    }
   }
 
-  // ⑨ summary.json。
-  const summaryPath = path.join(outDir, "summary.json");
-  fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2) + "\n", "utf-8");
+  // ⑨ summary.json（コミット記録として最後に確定する）。
+  const summaryName = "summary.json";
+  const summaryPath = path.join(outDir, summaryName);
+  const summaryData = JSON.stringify(summary, null, 2) + "\n";
+
+  // ---- Phase 2（コミット）: tmp+rename でファイル単位にアトミックに確定する ----
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.mkdirSync(partsDir, { recursive: true });
+  removeTmpResidue(outDir);
+  removeTmpResidue(partsDir);
+
+  // 全成果物を先に確定し、最後に summary.json を書く（＝ビルド完走の記録）。
+  for (const art of artifacts) {
+    writeArtifactAtomic(outDir, art);
+  }
+  writeArtifactAtomic(outDir, { name: summaryName, data: summaryData });
 
   // ⑩ 陳腐化ファイル削除。
   cleanupStale(outDir, partsDir, managedSvg, managedPng);
+
+  // ⑪ 成功コミットの最終ステップ: 失敗マーカーを除去する。
+  fs.rmSync(path.join(outDir, FAILURE_MARKER), { force: true });
 
   return {
     projectPath,

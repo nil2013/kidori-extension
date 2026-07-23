@@ -24,6 +24,10 @@ export type PlanAction =
 export class KidoriPreview {
   private panel: vscode.WebviewPanel | null = null;
   private lastData: PreviewData | null = null;
+  // stale: 直近ビルドが失敗し、表示中の図面が最新の正本を反映していない状態。
+  // showError で true、update で false。パネル再表示時にも再送する。
+  private stale = false;
+  private lastError: string | null = null;
 
   constructor(private readonly onAction: (action: PlanAction) => void) {}
 
@@ -49,19 +53,28 @@ export class KidoriPreview {
       this.onAction(msg);
     });
     this.panel.webview.html = this.html();
+    // パネル未表示中に届いた最新状態（データ・stale）を再表示時に反映する。
     if (this.lastData) {
       void this.panel.webview.postMessage({ command: "update", data: this.lastData });
+    }
+    if (this.stale && this.lastError !== null) {
+      void this.panel.webview.postMessage({ command: "error", message: this.lastError });
     }
   }
 
   update(data: PreviewData): void {
     this.lastData = data;
+    this.stale = false;
+    this.lastError = null;
     if (this.panel) {
       void this.panel.webview.postMessage({ command: "update", data });
     }
   }
 
   showError(message: string): void {
+    // 直近ビルド失敗。旧図面は残すが stale として薄色化＋警告バナーを出す。
+    this.stale = true;
+    this.lastError = message;
     if (this.panel) {
       void this.panel.webview.postMessage({ command: "error", message });
     }
@@ -102,7 +115,13 @@ export class KidoriPreview {
   .btn.secondary { background: var(--vscode-button-secondaryBackground);
                    color: var(--vscode-button-secondaryForeground); }
   .part-title { font-weight: 600; margin: 14px 0 4px; }
-  .error { color: var(--vscode-errorForeground); white-space: pre-wrap; margin: 10px 0; }
+  .error { white-space: pre-wrap; margin: 10px 0; padding: 8px 12px; border-radius: 3px;
+           background: var(--vscode-inputValidation-warningBackground, #6b5900);
+           border: 1px solid var(--vscode-inputValidation-warningBorder, #b8860b);
+           color: var(--vscode-foreground); }
+  /* stale: 直近ビルド失敗時。旧図面を薄色化し、採用操作を無効化する。 */
+  body.stale .svgbox { opacity: .35; filter: grayscale(.6); }
+  body.stale .actions { pointer-events: none; opacity: .4; }
   .empty { opacity: .7; margin-top: 30px; }
 </style>
 </head>
@@ -183,9 +202,11 @@ export class KidoriPreview {
           : '<span class="badge">最適性未証明</span>';
       }
       if (summary.selectedPlan === ps.id) badges += '<span class="badge">採用済み</span>';
+      const costNote = ps.totals.costComplete === false
+        ? "（一部価格なし・費用比較対象外）" : "";
       m.innerHTML =
         "必要本数: " + counts + "<br>" +
-        "概算費用: " + fmtCost(ps.totals.cost) +
+        "概算費用: " + fmtCost(ps.totals.cost) + costNote +
         " ／ 歩留まり: " + fmtYield(ps.totals.yield) +
         " ／ " + cutLabel + ": " + ps.totals.cutCount +
         (ps.rank ? " ／ 順位: " + ps.rank + " 位" : "") + badges;
@@ -252,12 +273,15 @@ export class KidoriPreview {
     const msg = event.data;
     if (msg.command === "update") {
       data = msg.data;
+      document.body.classList.remove("stale");
       el("error").hidden = true;
       renderPlans();
       renderParts();
     } else if (msg.command === "error") {
-      el("error").textContent = msg.message;
+      el("error").textContent =
+        "⚠ この表示は最新の正本を反映していません（直近のビルドが失敗しました）\n" + msg.message;
       el("error").hidden = false;
+      document.body.classList.add("stale");
     }
   });
 </script>

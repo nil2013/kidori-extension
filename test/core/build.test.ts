@@ -1,11 +1,13 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { build, exactPlanStrictlyBetter } from "../../src/core/build";
-import { ProjectError } from "../../src/core/errors";
+import { KidoriError, ProjectError } from "../../src/core/errors";
 import type { PlanSummary, Summary } from "../../src/core/metrics";
+import * as png from "../../src/core/png";
 
 let dir: string;
 
@@ -265,5 +267,138 @@ parts:
     expect(summary.exact.ran).toBe(true);
     expect(summary.plans[0].id).toBe("X");
     expect(fs.existsSync(path.join(result.outDir, "plan-X.svg"))).toBe(true);
+  });
+});
+
+describe("build（現行正本反映保証: S-11 / S-12 / S-09）", () => {
+  const validYaml = (partId = "p1"): string => `
+meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+settings: { kerf: 3, edgeTrim: 5, candidates: 3, selectedPlan: null }
+stocks:
+  - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19, price: 382 }
+parts:
+  - { id: ${partId}, label: 部材, qty: 2, stock: b1, length: 800 }
+`;
+
+  const invalidYaml = `
+meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+settings: { kerf: 3, edgeTrim: 5 }
+stocks:
+  - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19 }
+parts:
+  - { id: p1, label: 部材, qty: 1, stock: 存在しない, length: 500 }
+`;
+
+  const markerPath = (outDir: string): string =>
+    path.join(outDir, "BUILD-FAILED.txt");
+
+  it("成功ビルドは summary.sourceSha256 が実ファイルと一致し、マーカーが無い", () => {
+    const text = validYaml();
+    const p = writeProject(text);
+    const result = build(p, { png: false, log: silent });
+    const summary = readSummary(result.outDir);
+
+    const expected = createHash("sha256")
+      .update(fs.readFileSync(p))
+      .digest("hex");
+    expect(summary.sourceSha256).toBe(expected);
+    expect(summary.sourceFile).toBe("project.yaml");
+    expect(fs.existsSync(markerPath(result.outDir))).toBe(false);
+  });
+
+  it("検証エラーで BUILD-FAILED.txt を生成し、sourceSha256 と reason を記録する", () => {
+    const p = writeProject(invalidYaml);
+    const outDir = path.join(dir, "out");
+    expect(() => build(p, { png: false, log: silent })).toThrow(ProjectError);
+
+    const marker = markerPath(outDir);
+    expect(fs.existsSync(marker)).toBe(true);
+    const content = fs.readFileSync(marker, "utf-8");
+    const expected = createHash("sha256")
+      .update(fs.readFileSync(p))
+      .digest("hex");
+    expect(content).toContain(`sourceSha256: ${expected}`);
+    expect(content).toContain("reason:");
+    expect(content).toContain("最新の正本を反映していません");
+    // 検証エラーでは図面は生成されない。
+    expect(fs.existsSync(path.join(outDir, "summary.json"))).toBe(false);
+  });
+
+  it("失敗の後に成功するとマーカーが消える", () => {
+    const p = writeProject(invalidYaml);
+    const outDir = path.join(dir, "out");
+    expect(() => build(p, { png: false, log: silent })).toThrow(ProjectError);
+    expect(fs.existsSync(markerPath(outDir))).toBe(true);
+
+    writeProject(validYaml());
+    const result = build(p, { png: false, log: silent });
+    expect(fs.existsSync(markerPath(result.outDir))).toBe(false);
+  });
+
+  it("成功→検証エラーで旧 plan-*.svg は残るがマーカーで stale 判定できる", () => {
+    const p = writeProject(validYaml());
+    const r1 = build(p, { png: false, log: silent });
+    expect(fs.existsSync(path.join(r1.outDir, "plan-A.svg"))).toBe(true);
+
+    writeProject(invalidYaml);
+    expect(() => build(p, { png: false, log: silent })).toThrow(ProjectError);
+    // 旧図面は残る（削除まで到達しない）が、マーカーで最新でないと判定できる。
+    expect(fs.existsSync(path.join(r1.outDir, "plan-A.svg"))).toBe(true);
+    expect(fs.existsSync(markerPath(r1.outDir))).toBe(true);
+    // マーカーの sourceSha256 は新しい（無効な）正本のもの。
+    const content = fs.readFileSync(markerPath(r1.outDir), "utf-8");
+    const newSha = createHash("sha256")
+      .update(fs.readFileSync(p))
+      .digest("hex");
+    expect(content).toContain(`sourceSha256: ${newSha}`);
+  });
+
+  it("コミット後に *.kidori-tmp 残骸が残らない", () => {
+    const p = writeProject(validYaml());
+    const result = build(p, { png: false, log: silent });
+    const leftovers = [
+      ...fs.readdirSync(result.outDir),
+      ...fs.readdirSync(result.partsDir),
+    ].filter((n) => n.endsWith(".kidori-tmp"));
+    expect(leftovers).toEqual([]);
+  });
+
+  it("管理外ファイル（out/memo.txt）はビルドで保全される", () => {
+    const p = writeProject(validYaml());
+    const outDir = path.join(dir, "out");
+    fs.mkdirSync(outDir, { recursive: true });
+    const memo = path.join(outDir, "memo.txt");
+    fs.writeFileSync(memo, "手書きメモ", "utf-8");
+
+    build(p, { png: false, log: silent });
+    expect(fs.existsSync(memo)).toBe(true);
+    expect(fs.readFileSync(memo, "utf-8")).toBe("手書きメモ");
+  });
+
+  it("S-09: PNG 有効かつ resvg 利用不可なら KidoriError にしマーカーを残す", () => {
+    const spyAvail = vi.spyOn(png, "pngAvailable").mockReturnValue(false);
+    try {
+      const p = writeProject(validYaml());
+      const outDir = path.join(dir, "out");
+      expect(() => build(p, { png: true, log: silent })).toThrow(KidoriError);
+      // マーカーは残り、図面は生成されない。
+      expect(fs.existsSync(markerPath(outDir))).toBe(true);
+      expect(fs.existsSync(path.join(outDir, "summary.json"))).toBe(false);
+      const content = fs.readFileSync(markerPath(outDir), "utf-8");
+      expect(content).toContain("reason:");
+    } finally {
+      spyAvail.mockRestore();
+    }
+  });
+
+  it("S-09: resvg 利用可能なら PNG が生成される（既存挙動の維持）", () => {
+    // 実行環境に resvg-js が導入されている前提（未導入ならスキップ）。
+    if (!png.pngAvailable()) {
+      return;
+    }
+    const p = writeProject(validYaml());
+    const result = build(p, { png: true, log: silent });
+    expect(result.pngPaths.length).toBeGreaterThan(0);
+    expect(fs.existsSync(path.join(result.outDir, "plan-A.png"))).toBe(true);
   });
 });

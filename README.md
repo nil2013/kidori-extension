@@ -37,7 +37,7 @@ npm run package        # dist/ をビルドして kidori-0.4.0.vsix を生成
 code --install-extension kidori-0.4.0.vsix
 ```
 
-注意: resvg-js はプラットフォーム別のネイティブバイナリを含むため、`.vsix` は生成したマシンと同じ OS/アーキテクチャでのみ PNG 出力が有効になる。他プラットフォームでは PNG 生成が自動スキップされ、SVG と summary.json は通常どおり生成される。
+注意: resvg-js はプラットフォーム別のネイティブバイナリを含むため、`.vsix` は生成したマシンと同じ OS/アーキテクチャでのみ PNG 出力が有効になる。PNG は確定要件のため、PNG 有効のまま resvg-js が利用できない環境ではビルドをエラーにする（旧図面が最新でないまま残るのを防ぐ）。その環境で図面だけ生成したい場合は PNG を無効化する（CLI: `--no-png`、拡張: 設定 `kidori.png.enabled: false`）。
 
 ### (b) 開発モード（拡張開発ホスト）
 
@@ -138,10 +138,19 @@ out/
 ├── plan-B.* / plan-C.* / plan-X.*
 ├── parts/
 │   └── <部材ID>.svg / .png    # 加工指示図（チェーン寸法・溝/穴の注記）
-└── summary.json               # 必要本数・概算費用・歩留まり・カット回数・
-                               # rank / recommendedPlan / rankedPlans / exact
+├── summary.json               # 必要本数・概算費用・歩留まり・カット回数・
+│                              # rank / recommendedPlan / rankedPlans / exact
+│                              # ＋ sourceFile / sourceSha256（由来した正本の識別）
+└── BUILD-FAILED.txt           # 直近ビルドが失敗したときだけ存在する失敗マーカー
 project.schema.json            # ビルドごとに再生成（VS Code 以外のエディタ向け）
 ```
+
+### out/ が現行の正本由来かを確認する
+
+現場では `out/` の PNG をそのまま参照するため、図面が最新の正本を反映しているかを外形的に確認できるようにしている。
+
+- `out/BUILD-FAILED.txt` が存在する場合、直近のビルドは失敗しており、`out/` の図面は最新ではない。
+- 存在しない場合、`shasum -a 256 project.yaml` の出力が `out/summary.json` の `sourceSha256` と一致すれば、その `out/` は現在の正本から生成されたものと判定できる。
 
 ## 8. 開発
 

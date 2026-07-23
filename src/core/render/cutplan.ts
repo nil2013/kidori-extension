@@ -119,7 +119,12 @@ function costDisplay(totals: PlanTotals): string {
   if (cost === null || cost === undefined) {
     return "概算費用 算出不可";
   }
-  return `概算費用 ¥${Math.round(cost).toLocaleString("en-US")}`;
+  let s = `概算費用 ¥${Math.round(cost).toLocaleString("en-US")}`;
+  // S-05: 一部の規格に price が無い部分合計は費用比較に使えないため明示する。
+  if (totals.costComplete === false) {
+    s += "（一部価格なし・費用比較対象外）";
+  }
+  return s;
 }
 
 function countsDisplay(totals: PlanTotals): string {

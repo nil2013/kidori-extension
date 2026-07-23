@@ -99,9 +99,14 @@ function runBuild(options: CliOptions): number {
     if (e instanceof ProjectError) {
       // Issue 一覧は build() が log 済み。
       console.error(String(e.message));
-      return 1;
+    } else {
+      console.error(`[エラー] ${e instanceof Error ? e.message : String(e)}`);
     }
-    console.error(`[エラー] ${e instanceof Error ? e.message : String(e)}`);
+    // ビルド失敗時は out/ に失敗マーカーが残る（out/ の図面は最新ではない）。
+    console.error(
+      "[案内] out/BUILD-FAILED.txt に失敗の詳細と正本ハッシュを記録しました" +
+        "（out/ の図面は最新の正本を反映していません）",
+    );
     return 1;
   }
 }
