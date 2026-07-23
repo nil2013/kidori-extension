@@ -10,15 +10,17 @@ meta: { project: 書棚, units: mm, schemaVersion: "0.2" }
 
 settings:
   kerf: 3            # 鋸刃厚（mm、仮値）
-  edgeTrim: 5         # 木口の捨て代（mm）
+  edgeTrim: 5        # 木口の捨て代（mm）
   candidates: 3
-  selectedPlan: null  # 案を確定したら `kidori select A` のように書き換える
+  rank: [cost, waste, cuts]  # 推奨案の評価優先順（概算費用 → 歩留まり → カット回数）
+  exact: auto        # 部材数が少ないときは厳密探索で最適構成も確認する
+  selectedPlan: null # 案を確定したらプレビューの「この案を採用」または `kidori select A`
 
 stocks:
   # 側板用: パイン集成材の定尺（サブロク合板ではなく1820×910の集成材を使う想定）
   - { id: pine-18, label: "パイン集成材18mm", kind: sheet, length: 1820, width: 910, thickness: 18, price: 6356 }
   # 棚板用: 1x4材 6F
-  - { id: 1x4-6f,  label: "1×4材 6F",         kind: bar,   length: 1820, width: 89,  thickness: 19, price: 382 }
+  - { id: 1x4-6f, label: "1×4材 6F", kind: bar, length: 1820, width: 89, thickness: 19, price: 382 }
 
 parts:
   # 側板2枚。最下段棚を受ける通し溝と、配線用の止め溝を1本ずつ入れている。
