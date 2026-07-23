@@ -12,8 +12,12 @@
  *
  * v0.4 追加（Python 版には無い）:
  *   - planSummary.recommended === true のとき、案タイトルに「★ 推奨案」を追加。
- *     planSummary.exactMatch === true のときはさらに「（厳密解と一致）」を付記。
- *   - plan.id === "X" の案はタイトルを「候補X（厳密解）」と表記（A/B/C は従来表記）。
+ *     planSummary.exactMatch === true のときはさらに
+ *     「（最小必要本数が厳密解と一致）」を付記（exactMatch は最適性証明済みの
+ *     場合にのみ立つ。配置同一性は含意しない）。
+ *   - plan.id === "X" の案は planSummary.exactProven で表記を出し分ける:
+ *     true なら「候補X（厳密解）」、それ以外は「探索案X（最適性未証明）」
+ *     （A/B/C は従来表記）。
  *   - planSummary.stocks[].kind に sheet が含まれる案は「カット回数（概算）」表記。
  */
 
@@ -131,17 +135,28 @@ function countsDisplay(totals: PlanTotals): string {
 /**
  * 案タイトルを組み立てる（v0.4）。
  *
- * - plan.id === "X" は「候補X（厳密解）」、それ以外（A/B/C）は「案A」等の従来表記。
+ * - plan.id === "X" は最適性の証明状態（planSummary.exactProven）で出し分ける:
+ *   true なら「候補X（厳密解）」、それ以外は「探索案X（最適性未証明）」。
+ *   それ以外（A/B/C）は「案A」等の従来表記。
  * - planSummary.recommended === true のとき「★ 推奨案」を追加する。
- * - planSummary.exactMatch === true のときはさらに「（厳密解と一致）」を付記する。
+ * - planSummary.exactMatch === true のときはさらに
+ *   「（最小必要本数が厳密解と一致）」を付記する（配置同一性は含意しない）。
  */
 function planTitle(plan: Plan, planSummary: PlanSummary): string {
-  let title = plan.id === "X" ? "候補X（厳密解）" : `案${plan.id}`;
+  let title: string;
+  if (plan.id === "X") {
+    title =
+      planSummary.exactProven === true
+        ? "候補X（厳密解）"
+        : "探索案X（最適性未証明）";
+  } else {
+    title = `案${plan.id}`;
+  }
   if (planSummary.recommended === true) {
     title += " ★ 推奨案";
   }
   if (planSummary.exactMatch === true) {
-    title += "（厳密解と一致）";
+    title += "（最小必要本数が厳密解と一致）";
   }
   return title;
 }

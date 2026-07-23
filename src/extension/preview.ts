@@ -152,7 +152,12 @@ export class KidoriPreview {
       const ps = summary.plans.find(p => p.id === plan.id);
       const chip = document.createElement("button");
       chip.className = "chip" + (plan.id === activePlanId ? " active" : "");
-      let label = "案 " + plan.id;
+      let label;
+      if (plan.id === "X") {
+        label = ps && ps.exactProven === true ? "候補 X（厳密解）" : "探索案 X";
+      } else {
+        label = "案 " + plan.id;
+      }
       if (ps && ps.recommended) label += " ★";
       if (summary.selectedPlan === plan.id) label += "【採用】";
       chip.textContent = label;
@@ -171,7 +176,12 @@ export class KidoriPreview {
         .map(([id, n]) => id + " × " + n).join("、 ");
       let badges = "";
       if (ps.recommended) badges += '<span class="badge star">★ 推奨案</span>';
-      if (ps.exactMatch) badges += '<span class="badge">厳密解と一致</span>';
+      if (ps.exactMatch) badges += '<span class="badge">最小必要本数が厳密解と一致</span>';
+      if (ps.id === "X") {
+        badges += ps.exactProven === true
+          ? '<span class="badge">厳密解（最適性証明済み）</span>'
+          : '<span class="badge">最適性未証明</span>';
+      }
       if (summary.selectedPlan === ps.id) badges += '<span class="badge">採用済み</span>';
       m.innerHTML =
         "必要本数: " + counts + "<br>" +
@@ -186,7 +196,7 @@ export class KidoriPreview {
         const e = document.createElement("div");
         e.className = "metrics";
         e.textContent = exact.matchesPlan
-          ? "厳密探索: 案 " + exact.matchesPlan + " が最適構成と一致しました"
+          ? "厳密探索: 案 " + exact.matchesPlan + " の最小必要本数が厳密解と一致しました"
           : "厳密探索: " + exact.reason;
         view.appendChild(e);
       }

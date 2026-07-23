@@ -5,14 +5,17 @@
  * 最小本数（枚数）を厳密に求め、全体を案 X（method "exact"）として組み立てる。
  *
  * - mode "off": 実行しない。
- * - mode "auto": 部材インスタンス総数が AUTO_LIMIT（15）以下のときのみ実行。
+ * - mode "auto": 部材インスタンス総数が AUTO_LIMIT（15）以下のときのみ実行
+ *   （opts.force で件数制限を無視できる。selectedPlan: "X" 経路で使う）。
  * - mode "on": 部材数によらず実行（ノード予算は適用される）。
  *
  * 最適性の証明状態（proven）:
- *   - 1D は分枝限定が完了すれば常に証明あり。
- *   - 2D はコーナーポイント候補が配置存在性の完全網羅を保証しないため、
- *     面積下界と一致した場合のみ証明ありとする。
- *   - ノード予算超過で打ち切った場合は plan なし・証明なし。
+ *   - 各 stock について「探索が予算内で完走した（complete）」または
+ *     「必要数が下界と一致した（count === lowerBound）」なら証明あり。
+ *     1D は正規のビンパッキング下界、2D は正規パターン候補＋面積下界による。
+ *   - 全体 proven は各 stock の proven の論理積。
+ *   - 実行した場合、予算超過で打ち切っても plan は常に組み立てる（incumbent は
+ *     実行可能解）。打ち切り時は proven: false・案 X は候補として有効。
  */
 
 import type { Project, Stock } from "../types";
@@ -26,7 +29,7 @@ import {
   instanceId,
   usableLength,
 } from "../packing/common";
-import { Budget, BudgetExceededError } from "./budget";
+import { Budget } from "./budget";
 import { exactPack1d } from "./exact1d";
 import { Exact2DItem, exactPack2d } from "./exact2d";
 
@@ -41,7 +44,7 @@ export interface ExactRunResult {
   ran: boolean;
   /** 最適性を証明できたか。 */
   proven: boolean;
-  /** 厳密探索による案 X（実行しなかった・打ち切った場合は null）。 */
+  /** 厳密探索による案 X（実行しなかった場合のみ null。実行時は打ち切っても非 null）。 */
   plan: Plan | null;
   /** 実行しなかった・証明できなかった場合の理由（日本語）。proven 時は null。 */
   reason: string | null;
@@ -65,7 +68,7 @@ function packBarExact(
   kerf: number,
   edgeTrim: number,
   budget: Budget,
-): StockUnit[] {
+): { units: StockUnit[]; proven: boolean } {
   const usable = usableLength(stock.length, edgeTrim);
   const lengths = instances.map((inst) => inst.part.length);
   const result = exactPack1d(lengths, usable, kerf, budget);
@@ -81,7 +84,7 @@ function packBarExact(
     }
     units.push({ stock, index: i + 1, placements });
   });
-  return units;
+  return { units, proven: result.complete || result.count === result.lowerBound };
 }
 
 function packSheetExact(
@@ -90,7 +93,7 @@ function packSheetExact(
   kerf: number,
   edgeTrim: number,
   budget: Budget,
-): { units: StockUnit[]; proven: boolean } {
+): { units: StockUnit[]; proven: boolean; capped: boolean } {
   const winW = usableLength(stock.length, edgeTrim) + kerf;
   const winH = usableLength(stock.width, edgeTrim) + kerf;
   const items: Exact2DItem[] = instances.map((inst, i) => ({
@@ -112,7 +115,11 @@ function packSheetExact(
     placements.sort((a, b) => a.y - b.y || a.x - b.x);
     units.push({ stock, index: i + 1, placements });
   });
-  return { units, proven: result.count === result.lowerBound };
+  return {
+    units,
+    proven: result.complete || result.count === result.lowerBound,
+    capped: result.capped,
+  };
 }
 
 /**
@@ -120,10 +127,13 @@ function packSheetExact(
  *
  * @param project 検証済みの Project。
  * @param opts.nodeBudget 探索ノード予算（デフォルト DEFAULT_NODE_BUDGET）。
+ * @param opts.force true なら mode "auto" の AUTO_LIMIT 件数制限を無視して実行する
+ *   （selectedPlan: "X" 経路。検証を通過した正本が件数超過で確定的にビルド不能に
+ *   なるのを防ぐ）。
  */
 export function runExact(
   project: Project,
-  opts?: { nodeBudget?: number },
+  opts?: { nodeBudget?: number; force?: boolean },
 ): ExactRunResult {
   const mode = project.settings.exact;
   if (mode === "off") {
@@ -148,7 +158,8 @@ export function runExact(
       reason: "部材がないため厳密探索を実行しませんでした",
     };
   }
-  if (mode === "auto" && total > AUTO_LIMIT) {
+  const force = opts?.force ?? false;
+  if (mode === "auto" && total > AUTO_LIMIT && !force) {
     return {
       ran: false,
       proven: false,
@@ -160,56 +171,55 @@ export function runExact(
   const budget = new Budget(opts?.nodeBudget ?? DEFAULT_NODE_BUDGET);
   const { kerf, edgeTrim } = project.settings;
 
-  try {
-    const units: StockUnit[] = [];
-    let proven = true;
-    for (const stock of project.stocks) {
-      const instances = byStock.get(stock.id);
-      if (!instances || instances.length === 0) {
-        continue;
-      }
-      if (stock.kind === "bar") {
-        units.push(...packBarExact(instances, stock, kerf, edgeTrim, budget));
-      } else {
-        const result = packSheetExact(instances, stock, kerf, edgeTrim, budget);
-        units.push(...result.units);
-        proven = proven && result.proven;
-      }
+  const units: StockUnit[] = [];
+  let proven = true;
+  let anyCapped = false;
+  for (const stock of project.stocks) {
+    const instances = byStock.get(stock.id);
+    if (!instances || instances.length === 0) {
+      continue;
     }
-
-    const seq: Record<string, number> = {};
-    let n = 0;
-    for (const unit of units) {
-      for (const placement of unit.placements) {
-        n += 1;
-        seq[instanceId(placement.instance)] = n;
-      }
+    if (stock.kind === "bar") {
+      const result = packBarExact(instances, stock, kerf, edgeTrim, budget);
+      units.push(...result.units);
+      proven = proven && result.proven;
+    } else {
+      const result = packSheetExact(instances, stock, kerf, edgeTrim, budget);
+      units.push(...result.units);
+      proven = proven && result.proven;
+      anyCapped = anyCapped || result.capped;
     }
-
-    const plan: Plan = {
-      id: "X",
-      method1d: "exact",
-      method2d: "exact",
-      units,
-      seq,
-    };
-    return {
-      ran: true,
-      proven,
-      plan,
-      reason: proven
-        ? null
-        : "2D 配置が面積下界と一致しなかったため、最適性は未証明です（得られた解は候補として有効）",
-    };
-  } catch (e) {
-    if (e instanceof BudgetExceededError) {
-      return {
-        ran: true,
-        proven: false,
-        plan: null,
-        reason: "探索空間が大きいため厳密探索を打ち切りました（ノード予算超過）",
-      };
-    }
-    throw e;
   }
+
+  const seq: Record<string, number> = {};
+  let n = 0;
+  for (const unit of units) {
+    for (const placement of unit.placements) {
+      n += 1;
+      seq[instanceId(placement.instance)] = n;
+    }
+  }
+
+  const plan: Plan = {
+    id: "X",
+    method1d: "exact",
+    method2d: "exact",
+    units,
+    seq,
+  };
+
+  let reason: string | null;
+  if (proven) {
+    reason = null;
+  } else if (budget.exhausted) {
+    reason =
+      "探索空間が大きいため厳密探索を打ち切りました（ノード予算超過）。得られた解は候補として有効です。";
+  } else if (anyCapped) {
+    reason =
+      "部材寸法の組合せが多く候補集合の上限を超えたため、完全な探索を構成できませんでした。得られた解は候補として有効です。";
+  } else {
+    reason =
+      "配置の最適性を証明できませんでした（得られた解は候補として有効です）。";
+  }
+  return { ran: true, proven, plan, reason };
 }

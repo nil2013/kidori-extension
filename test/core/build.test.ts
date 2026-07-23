@@ -3,9 +3,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { build } from "../../src/core/build";
+import { build, exactPlanStrictlyBetter } from "../../src/core/build";
 import { ProjectError } from "../../src/core/errors";
-import type { Summary } from "../../src/core/metrics";
+import type { PlanSummary, Summary } from "../../src/core/metrics";
 
 let dir: string;
 
@@ -122,6 +122,8 @@ parts:
     expect(result.planIds).toEqual(["X"]);
     const summary = readSummary(result.outDir);
     expect(summary.plans[0].method["1d"]).toBe("exact");
+    // selectedPlan: X 経路でも証明状態が summary に載る（表示の出し分けに使う）。
+    expect(summary.plans[0].exactProven).toBe(true);
     expect(fs.existsSync(path.join(result.outDir, "plan-X.svg"))).toBe(true);
   });
 
@@ -157,5 +159,111 @@ parts:
     const r2 = build(p, { png: false, log: silent });
     expect(fs.existsSync(path.join(r2.partsDir, "new-part.svg"))).toBe(true);
     expect(fs.existsSync(path.join(r2.partsDir, "old-part.svg"))).toBe(false);
+  });
+});
+
+describe("build（厳密探索の証明状態と表示ゲート）", () => {
+  it("proven=false のとき exactMatch / matchesPlan が立たない", () => {
+    // 幅 2^0..2^12 の13部材: 2D 候補集合が PATTERN_CAP を超え、貪欲解＋未証明になる。
+    // 部材幅 60 は原材幅 100 に2段積みできず、総長 8191 > 5000 のため2枚以上
+    //（面積下界1と一致しない → 下界一致の証明も成立しない）。
+    const partsYaml = Array.from({ length: 13 }, (_, i) => 2 ** i)
+      .map(
+        (len, i) =>
+          `  - { id: p${i}, label: p${i}, qty: 1, stock: s1, length: ${len}, width: 60, rot: false }`,
+      )
+      .join("\n");
+    const p = writeProject(`
+meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+settings: { kerf: 0, edgeTrim: 0, candidates: 3, selectedPlan: null }
+stocks:
+  - { id: s1, label: 板, kind: sheet, length: 5000, width: 100, thickness: 18 }
+parts:
+${partsYaml}
+`);
+    const result = build(p, { png: false, log: silent });
+    const summary = readSummary(result.outDir);
+
+    expect(summary.exact.ran).toBe(true);
+    expect(summary.exact.proven).toBe(false);
+    expect(summary.exact.matchesPlan).toBeNull();
+    expect(summary.exact.reason).toContain("候補集合");
+    // 未証明のため、必要枚数が一致してもどの案にも exactMatch は立たない。
+    expect(summary.plans.every((pl) => pl.exactMatch !== true)).toBe(true);
+    // 案 X が候補に含まれる場合は必ず未証明表示（exactProven: false）になる。
+    const planX = summary.plans.find((pl) => pl.id === "X");
+    if (planX) {
+      expect(planX.exactProven).toBe(false);
+    }
+  });
+
+  it("S-04: 必要本数もカット回数もタイのとき案 X は破棄され、一致案に exactMatch が立つ", () => {
+    // FFD 自体が最適（2本・下界一致）の組合せ: 厳密探索は FFD と同一構成を返し、
+    // rank 全基準でタイ → タイブレークでヒューリスティック上位 → X 破棄。
+    const p = writeProject(`
+meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+settings: { kerf: 0, edgeTrim: 0, candidates: 3, selectedPlan: null }
+stocks:
+  - { id: b1, label: 棒, kind: bar, length: 1000, width: 89, thickness: 19 }
+parts:
+  - { id: p600, label: a, qty: 1, stock: b1, length: 600 }
+  - { id: p500, label: b, qty: 1, stock: b1, length: 500 }
+  - { id: p400, label: c, qty: 1, stock: b1, length: 400 }
+  - { id: p300, label: d, qty: 1, stock: b1, length: 300 }
+  - { id: p200, label: e, qty: 1, stock: b1, length: 200 }
+`);
+    const result = build(p, { png: false, log: silent });
+    const summary = readSummary(result.outDir);
+
+    expect(summary.exact.ran).toBe(true);
+    expect(summary.exact.proven).toBe(true);
+    expect(result.planIds).toEqual(["A", "B", "C"]); // X は破棄
+    expect(summary.exact.matchesPlan).not.toBeNull();
+    expect(summary.plans.some((pl) => pl.exactMatch === true)).toBe(true);
+  });
+
+  it("S-04: 本数タイでも案 X のカット回数が厳密に少なければ候補保持判定が真になる", () => {
+    const base: Omit<PlanSummary, "id" | "totals"> = {
+      method: { "1d": "ffd", "2d": "maxrects-bssf" },
+      stocks: [],
+    };
+    const mk = (id: string, cutCount: number): PlanSummary => ({
+      ...base,
+      id,
+      totals: {
+        cost: null,
+        costComplete: false,
+        yield: 0.8,
+        cutCount,
+        stockCounts: { b1: 2 },
+      },
+    });
+    const rank: ("cost" | "waste" | "cuts")[] = ["cost", "waste", "cuts"];
+
+    // X のカット回数が全一致案より少ない → 候補保持。
+    expect(exactPlanStrictlyBetter(mk("X", 3), [mk("A", 4), mk("B", 5)], rank)).toBe(
+      true,
+    );
+    // 1案とでもタイ（全基準同値）→ タイブレークでヒューリスティック上位 → 破棄。
+    expect(exactPlanStrictlyBetter(mk("X", 4), [mk("A", 4), mk("B", 5)], rank)).toBe(
+      false,
+    );
+  });
+
+  it("S-13: selectedPlan: X × exact: auto × 部材数16 でビルドが成功する", () => {
+    const p = writeProject(`
+meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+settings: { kerf: 3, edgeTrim: 5, candidates: 3, exact: auto, selectedPlan: X }
+stocks:
+  - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19 }
+parts:
+  - { id: p1, label: 部材, qty: 16, stock: b1, length: 300 }
+`);
+    const result = build(p, { png: false, log: silent });
+    expect(result.planIds).toEqual(["X"]);
+    const summary = readSummary(result.outDir);
+    expect(summary.exact.ran).toBe(true);
+    expect(summary.plans[0].id).toBe("X");
+    expect(fs.existsSync(path.join(result.outDir, "plan-X.svg"))).toBe(true);
   });
 });

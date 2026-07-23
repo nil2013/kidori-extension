@@ -496,7 +496,7 @@ describe("renderCutplan v0.4 header", () => {
 
     const header = headerTexts(root)[0];
     expect(header).toContain("案A ★ 推奨案");
-    expect(header).not.toContain("（厳密解と一致）");
+    expect(header).not.toContain("（最小必要本数が厳密解と一致）");
   });
 
   it("recommended が無い（undefined/false）とき ★ 表記は付かない", () => {
@@ -510,7 +510,7 @@ describe("renderCutplan v0.4 header", () => {
     }
   });
 
-  it("recommended かつ exactMatch のとき「（厳密解と一致）」が付記される", () => {
+  it("recommended かつ exactMatch のとき「（最小必要本数が厳密解と一致）」が付記される", () => {
     const [plan, project] = makeBarPlanAndProject(null);
     const summary = {
       ...makeBarSummary(),
@@ -520,28 +520,45 @@ describe("renderCutplan v0.4 header", () => {
     };
     const root = parseXml(renderCutplan(plan, project, summary));
 
-    expect(headerTexts(root)[0]).toContain("案A ★ 推奨案（厳密解と一致）");
+    expect(headerTexts(root)[0]).toContain(
+      "案A ★ 推奨案（最小必要本数が厳密解と一致）",
+    );
   });
 
-  it("exactMatch のみでも「（厳密解と一致）」が付記される", () => {
+  it("exactMatch のみでも「（最小必要本数が厳密解と一致）」が付記される", () => {
     const [plan, project] = makeBarPlanAndProject(null);
     const summary = { ...makeBarSummary(), exactMatch: true };
     const root = parseXml(renderCutplan(plan, project, summary));
 
     const header = headerTexts(root)[0];
-    expect(header).toContain("案A（厳密解と一致）");
+    expect(header).toContain("案A（最小必要本数が厳密解と一致）");
     expect(header).not.toContain("★ 推奨案");
   });
 
-  it("plan.id === 'X' の案はタイトルが「候補X（厳密解）」になる", () => {
+  it("plan.id === 'X' かつ exactProven のときタイトルが「候補X（厳密解）」になる", () => {
     const [planA, project] = makeBarPlanAndProject(null);
     const plan: Plan = { ...planA, id: "X", method1d: "exact", method2d: "exact" };
-    const summary = { ...makeBarSummary(), id: "X" };
+    const summary = { ...makeBarSummary(), id: "X", exactProven: true };
     const root = parseXml(renderCutplan(plan, project, summary));
 
     const header = headerTexts(root)[0];
     expect(header).toContain("候補X（厳密解）");
     expect(header).not.toContain("案X");
+    expect(header).not.toContain("未証明");
+  });
+
+  it("plan.id === 'X' で exactProven でない（false/未設定）ときは「探索案X（最適性未証明）」になる", () => {
+    const [planA, project] = makeBarPlanAndProject(null);
+    const plan: Plan = { ...planA, id: "X", method1d: "exact", method2d: "exact" };
+    for (const summary of [
+      { ...makeBarSummary(), id: "X", exactProven: false },
+      { ...makeBarSummary(), id: "X" },
+    ]) {
+      const root = parseXml(renderCutplan(plan, project, summary));
+      const header = headerTexts(root)[0];
+      expect(header).toContain("探索案X（最適性未証明）");
+      expect(header).not.toContain("候補X（厳密解）");
+    }
   });
 
   it("sheet を含む案はカット回数が「カット回数（概算）」表記になる", () => {

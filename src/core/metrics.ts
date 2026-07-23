@@ -87,8 +87,13 @@ export interface PlanSummary {
   rank?: number;
   /** 最上位＝推奨案（★）。rankPlans() が設定する。 */
   recommended?: boolean;
-  /** 厳密解と必要本数が一致したヒューリスティック案に立つフラグ。 */
+  /** 最小必要本数が厳密解と一致したヒューリスティック案に立つフラグ（proven 時のみ）。 */
   exactMatch?: boolean;
+  /**
+   * 案 X（厳密探索案）のみに設定する、最適性の証明状態。
+   * true なら「候補X（厳密解）」、false なら「探索案X（最適性未証明）」と表示する。
+   */
+  exactProven?: boolean;
 }
 
 /** summary.json の exact 区画（厳密探索の実行結果メタ情報）。 */

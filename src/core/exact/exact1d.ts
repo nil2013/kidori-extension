@@ -12,17 +12,24 @@
  *     新規ビンは常に1つだけ開く。同一長の部材は直前の同長部材が入った
  *     ビン以降にのみ入れる。
  *
- * 探索が（予算内で）完了すれば、返る本数は真の最小本数である。
+ * 探索が（予算内で）完了すれば、返る本数は真の最小本数である。予算超過時は
+ * BudgetExceededError を内部で捕捉し、その時点の incumbent（FFD 解または探索中の
+ * 最良解）を complete: false で返す。complete: false でも count === lowerBound なら
+ * （下界一致により）最適が証明される。
  */
 
 import { EPS } from "../packing/common";
-import { Budget } from "./budget";
+import { Budget, BudgetExceededError } from "./budget";
 
 export interface Exact1DResult {
-  /** 必要本数の最小値。 */
+  /** 必要本数の最小値（complete が false のときは上界）。 */
   count: number;
-  /** 各ビンに入る部材のインデックス（入力配列基準）。ビン内は入力順。 */
+  /** 各ビンに入る部材のインデックス（入力配列基準）。ビン内は長い順。 */
   bins: number[][];
+  /** 情報理論的下界 ceil(Σ(len+kerf) ÷ (usable+kerf))。count === lowerBound なら最適。 */
+  lowerBound: number;
+  /** 予算内で分枝限定が完走したか。true なら count は真の最小本数である。 */
+  complete: boolean;
 }
 
 /**
@@ -41,7 +48,7 @@ export function exactPack1d(
 ): Exact1DResult {
   const n = lengths.length;
   if (n === 0) {
-    return { count: 0, bins: [] };
+    return { count: 0, bins: [], lowerBound: 0, complete: true };
   }
 
   const cap = usable + kerf;
@@ -90,8 +97,21 @@ export function exactPack1d(
     return used + (excess > EPS ? Math.ceil((excess - EPS) / cap) : 0);
   };
 
-  if (lowerBound(0, totalSize, 0) >= bestCount) {
-    return { count: bestCount, bins: bestBins };
+  // 情報理論的下界（ビン内を長い順に整えてから返す共通処理）。
+  const gLB = lowerBound(0, totalSize, 0);
+  const finish = (complete: boolean): Exact1DResult => {
+    for (const bin of bestBins) {
+      bin.sort((a, b) => lengths[b] - lengths[a] || a - b);
+    }
+    return { count: bestCount, bins: bestBins, lowerBound: gLB, complete };
+  };
+
+  // 直前の stock で予算枯渇済み → 探索せず FFD 解を返す（未証明）。
+  if (budget.exhausted) {
+    return finish(false);
+  }
+  if (gLB >= bestCount) {
+    return finish(true);
   }
 
   const binRemaining: number[] = [];
@@ -101,6 +121,10 @@ export function exactPack1d(
   const minBinForItem = new Array<number>(n).fill(0);
 
   const dfs = (pos: number): void => {
+    // incumbent が下界に達したら探索全体を即終了する。
+    if (bestCount <= gLB) {
+      return;
+    }
     budget.tick();
     if (pos === n) {
       if (binItems.length < bestCount) {
@@ -160,12 +184,18 @@ export function exactPack1d(
     }
   };
 
-  dfs(0);
+  let complete = true;
+  try {
+    dfs(0);
+  } catch (e) {
+    if (e instanceof BudgetExceededError) {
+      complete = false;
+    } else {
+      throw e;
+    }
+  }
 
   // ビン内を入力インデックス順ではなく「長い順」に整える（FFD 由来の
   // bestBins と分枝限定由来の bins の表現を揃える。配置は長い順が自然）。
-  for (const bin of bestBins) {
-    bin.sort((a, b) => lengths[b] - lengths[a] || a - b);
-  }
-  return { count: bestCount, bins: bestBins };
+  return finish(complete);
 }

@@ -30,13 +30,14 @@ import {
   PlanSummary,
   Summary,
   buildSummary,
+  comparePlanSummaries,
   rankPlans,
   summarize,
 } from "./metrics";
 import { renderCutplan } from "./render/cutplan";
 import { renderPartcard } from "./render/partcard";
 import { svgToPng } from "./png";
-import type { Project } from "./types";
+import type { Project, RankKey } from "./types";
 
 /** モードライン（YAML 先頭行）の想定プレフィックス。 */
 const MODELINE_PREFIX = "# yaml-language-server: $schema=";
@@ -150,14 +151,36 @@ function cleanupStale(
 }
 
 /**
+ * S-04 タイ処理の判定: 必要本数が一致した全ヒューリスティック案よりも、案 X が
+ * settings.rank 上で厳密に上位（comparePlanSummaries が負値）の場合のみ true。
+ * comparePlanSummaries は全基準同値のときヒューリスティック案を X より上位に
+ * 置くため、完全なタイでは false になる（＝案 X は破棄される）。
+ * 候補保持の判定であり、最適性の証明状態（proven）には依存しない。
+ */
+export function exactPlanStrictlyBetter(
+  exactSummary: PlanSummary,
+  matching: PlanSummary[],
+  rankKeys: RankKey[],
+): boolean {
+  return matching.every(
+    (s) => comparePlanSummaries(exactSummary, s, rankKeys) < 0,
+  );
+}
+
+/**
  * 割付案の生成＋厳密探索の統合（v0.4 §5）。
  *
  * - selectedPlan が A/B/C: その案のみ生成し、厳密探索は省略する。
  * - selectedPlan が "X": 厳密探索の案 X のみ生成する（生成不能なら KidoriError）。
  * - selectedPlan が null: A/B/C を生成し、settings.exact に応じて厳密探索を実行。
- *   厳密解の必要本数がいずれかのヒューリスティック案と全 stock で一致する場合は
- *   案 X を追加せず、一致した案に exactMatch を立てる。厳密解が真に少ない場合のみ
- *   案 X を候補に加える。
+ *   - 厳密解の必要本数が全 stock で一致するヒューリスティック案には、厳密探索が
+ *     最適性を証明できた（exact.proven）場合に限り exactMatch を立てる。
+ *   - 一致案があっても、案 X が rank 上で一致した全案より厳密に上位（例: 同じ本数で
+ *     カット回数が少ない）なら、案 X も候補として保持する（S-04。候補としての価値は
+ *     証明から独立なので proven は問わない）。
+ *   - 一致案が無い（厳密解が真に少ない）場合は案 X を候補に加える。
+ *   - 案 X の summary には exactProven（＝exact.proven）を設定し、表示側が
+ *     「候補X（厳密解）」/「探索案X（最適性未証明）」を出し分けられるようにする。
  */
 function generateAllPlans(project: Project): {
   plans: Plan[];
@@ -184,7 +207,9 @@ function generateAllPlans(project: Project): {
     };
   }
 
-  const exact = runExact(project);
+  // selectedPlan: "X" 経路では AUTO_LIMIT 件数制限を無視する（検証を通過した
+  // 正本が件数超過で確定的にビルド不能になるのを防ぐ。S-13）。
+  const exact = runExact(project, { force: selected === "X" });
 
   if (selected === "X") {
     if (exact.plan === null) {
@@ -193,10 +218,11 @@ function generateAllPlans(project: Project): {
           (exact.reason !== null ? `（${exact.reason}）` : ""),
       );
     }
-    const summaries = [summarize(exact.plan, project)];
+    const summary = summarize(exact.plan, project);
+    summary.exactProven = exact.proven;
     return {
       plans: [exact.plan],
-      summaries,
+      summaries: [summary],
       exactInfo: {
         mode,
         ran: exact.ran,
@@ -214,6 +240,7 @@ function generateAllPlans(project: Project): {
 
   if (exact.plan !== null) {
     const exactSummary = summarize(exact.plan, project);
+    exactSummary.exactProven = exact.proven;
     const sameCounts = (a: PlanSummary, b: PlanSummary): boolean => {
       const keysA = Object.keys(a.totals.stockCounts);
       const keysB = Object.keys(b.totals.stockCounts);
@@ -226,8 +253,17 @@ function generateAllPlans(project: Project): {
     };
     const matching = summaries.filter((s) => sameCounts(s, exactSummary));
     if (matching.length > 0) {
-      for (const s of matching) {
-        s.exactMatch = true;
+      // exactMatch は最適性が証明された場合のみ立てる（S-02/S-03）。
+      if (exact.proven) {
+        for (const s of matching) {
+          s.exactMatch = true;
+        }
+      }
+      // S-04: 本数が一致していても、案 X が rank 上で一致した全案より厳密に上位
+      // （例: カット回数が少ない）なら案 X も候補として保持する。
+      if (exactPlanStrictlyBetter(exactSummary, matching, settings.rank)) {
+        plans.push(exact.plan);
+        summaries.push(exactSummary);
       }
     } else {
       plans.push(exact.plan);
