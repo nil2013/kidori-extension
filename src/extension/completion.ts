@@ -9,6 +9,11 @@
  *
  * キー名補完・enum 補完・型検証は Red Hat YAML 拡張＋動的スキーマ
  * （schemaContributor.ts）が担うため、ここでは扱わない。
+ *
+ * 登録対象は YAML（project.yaml/yml）のみ。ドメイン値補完は手書き YAML
+ * 経路の支援であり、JSON は機械生成・他ツール連携用途（SPECS.md §4a）の
+ * ため対象外とする。コンテキスト判定（topLevelSection）も YAML の行頭
+ * キー（`key:`）を前提としており、JSON の構文では機能しない。
  */
 
 import * as vscode from "vscode";
@@ -31,10 +36,13 @@ function topLevelSection(
 
 function stockSnippet(preset: StockPreset, needsDash: boolean): vscode.SnippetString {
   const prefix = needsDash ? "- " : "";
+  // price は挿入しない（S-06）: 実勢価格を知らないユーザーの入力に
+  // price: 0 が紛れ込むと、未入力が「実価格ゼロ」として費用計算・
+  // 推奨順位に混入してしまう。価格が分かる場合のみ利用者が自分で追記する。
   const body =
     `${prefix}{ id: \${1:${preset.id}}, label: "${preset.name}", ` +
     `kind: ${preset.kind}, length: ${preset.length}, width: ${preset.width}, ` +
-    `thickness: ${preset.thickness}, price: \${2:0} }`;
+    `thickness: ${preset.thickness} }`;
   return new vscode.SnippetString(body);
 }
 

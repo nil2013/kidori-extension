@@ -22,7 +22,8 @@
   "activationEvents": [
     "workspaceContains:**/project.yaml",
     "workspaceContains:**/project.json",
-    "onLanguage:yaml"
+    "onLanguage:yaml",
+    "onLanguage:json"
   ],
   "contributes": {
     "commands": [

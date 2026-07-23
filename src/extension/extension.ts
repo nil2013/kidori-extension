@@ -85,13 +85,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  // --- ドメイン値補完（規格材プリセット・定尺寸法）。
+  // --- ドメイン値補完（規格材プリセット・定尺寸法）。YAML のみ（completion.ts 冒頭コメント参照）。
   context.subscriptions.push(
     vscode.languages.registerCompletionItemProvider(
-      [
-        { language: "yaml", pattern: "**/project.{yaml,yml}" },
-        { language: "json", pattern: "**/project.json" },
-      ],
+      [{ language: "yaml", pattern: "**/project.{yaml,yml}" }],
       createCompletionProvider(() => presets),
       ":",
       " ",
@@ -99,8 +96,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
   );
 
-  // --- JSON 入力用: project.schema.json を json.schemas に登録する。
+  // --- JSON 入力用: 各 project.json の隣の project.schema.json を json.schemas に登録する。
   await registerJsonSchemaSetting();
+  const projectJsonWatcher = vscode.workspace.createFileSystemWatcher("**/project.json");
+  projectJsonWatcher.onDidCreate((uri) => {
+    void registerSchemaForProjectJson(uri);
+  });
+  context.subscriptions.push(projectJsonWatcher);
 
   // --- Webview プレビュー。
   preview = new KidoriPreview((action: PlanAction) => {
@@ -377,36 +379,71 @@ async function applySelection(planId: string | null): Promise<void> {
   }
 }
 
-/** JSON 入力用に project.schema.json を json.schemas 設定へ登録する。 */
+/**
+ * JSON 入力用に、ワークスペース内の全 project.json を検出して
+ * json.schemas 設定へ登録する（S-10-c）。
+ *
+ * 直下の project.json だけでなく、サブディレクトリの project.json も
+ * 対象にするため、単一フォルダ直下チェックではなく findFiles で走査する。
+ */
 async function registerJsonSchemaSetting(): Promise<void> {
-  for (const folder of vscode.workspace.workspaceFolders ?? []) {
-    const projectJson = path.join(folder.uri.fsPath, "project.json");
-    if (!fs.existsSync(projectJson)) {
-      continue;
-    }
-    const config = vscode.workspace.getConfiguration("json", folder.uri);
-    const schemas =
-      config.get<{ fileMatch?: string[]; url?: string }[]>("schemas") ?? [];
-    const exists = schemas.some((s) => s.fileMatch?.includes("project.json"));
-    if (!exists) {
-      schemas.push({ fileMatch: ["project.json"], url: "./project.schema.json" });
-      try {
-        await config.update(
-          "schemas",
-          schemas,
-          vscode.ConfigurationTarget.WorkspaceFolder,
-        );
-        channel.appendLine(
-          "[設定] project.json 用に json.schemas へスキーマを登録しました",
-        );
-      } catch {
-        // マルチルートでない等で失敗した場合は Workspace スコープで再試行。
-        try {
-          await config.update("schemas", schemas, vscode.ConfigurationTarget.Workspace);
-        } catch {
-          channel.appendLine("[警告] json.schemas への登録に失敗しました");
-        }
-      }
+  const found = await vscode.workspace.findFiles(
+    "**/project.json",
+    "**/node_modules/**",
+  );
+  for (const uri of found) {
+    await registerSchemaForProjectJson(uri);
+  }
+}
+
+/**
+ * 1 件の project.json を json.schemas に登録する。
+ *
+ * 登録方式について: json.schemas の url が相対パスの場合、公式ドキュメント
+ * （code.visualstudio.com/docs/languages/json）は「ワークスペースルートから
+ * の相対パス」と説明しており、一致した project.json 自身の隣（サブディレクトリ）
+ * を指すとは限らない。そのため fileMatch を全ファイル一致の単一ワイルドカード
+ * パターン 1 件にまとめ、url を隣接スキーマへの相対パスにする案は、
+ * project.json がワークスペースルート以外のディレクトリにある場合に
+ * 誤ったスキーマ（ルート直下の project.schema.json、多くは存在しない）を
+ * 指してしまい破綻する。
+ *
+ * 確実に動作させるため、project.json ごとに 1 エントリを生成する方式を採る:
+ *   - fileMatch: その project.json のワークスペースフォルダ相対パス
+ *     （例: "sub/project.json"）。フォルダ設定（WorkspaceFolder スコープ）に
+ *     登録するため、フォルダ直下からの相対パスとして解決される。
+ *   - url: 隣接する project.schema.json への絶対 file:// URI。
+ *     相対パス解決の曖昧さを避けるため、常に一意に解決できる絶対 URI を使う。
+ */
+async function registerSchemaForProjectJson(uri: vscode.Uri): Promise<void> {
+  const folder = vscode.workspace.getWorkspaceFolder(uri);
+  if (!folder) {
+    return;
+  }
+  const relPath = path
+    .relative(folder.uri.fsPath, uri.fsPath)
+    .split(path.sep)
+    .join("/");
+  const schemaPath = path.join(path.dirname(uri.fsPath), "project.schema.json");
+  const schemaUrl = vscode.Uri.file(schemaPath).toString();
+
+  const config = vscode.workspace.getConfiguration("json", folder.uri);
+  const schemas =
+    config.get<{ fileMatch?: string[]; url?: string }[]>("schemas") ?? [];
+  const exists = schemas.some((s) => s.fileMatch?.includes(relPath));
+  if (exists) {
+    return;
+  }
+  schemas.push({ fileMatch: [relPath], url: schemaUrl });
+  try {
+    await config.update("schemas", schemas, vscode.ConfigurationTarget.WorkspaceFolder);
+    channel.appendLine(`[設定] ${relPath} 用に json.schemas へスキーマを登録しました`);
+  } catch {
+    // マルチルートでない等で失敗した場合は Workspace スコープで再試行。
+    try {
+      await config.update("schemas", schemas, vscode.ConfigurationTarget.Workspace);
+    } catch {
+      channel.appendLine(`[警告] ${relPath} の json.schemas 登録に失敗しました`);
     }
   }
 }
