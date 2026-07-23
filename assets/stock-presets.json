@@ -1,0 +1,20 @@
+{
+  "$comment": "kidori 同梱の規格材プリセット。stocks 補完・寸法値補完の元データ。ワークスペース直下の kidori.presets.json で追記・上書きできる（同名 name は上書き）。プリセット内容は SPECS.md §8 の未確定事項（資材価格ログとの表記整合）を解消するまでの暫定値。",
+  "stocks": [
+    { "name": "1×4材 6F", "id": "1x4-6f", "kind": "bar", "length": 1820, "width": 89, "thickness": 19 },
+    { "name": "1×4材 8F", "id": "1x4-8f", "kind": "bar", "length": 2438, "width": 89, "thickness": 19 },
+    { "name": "2×4材 6F", "id": "2x4-6f", "kind": "bar", "length": 1820, "width": 89, "thickness": 38 },
+    { "name": "2×4材 8F", "id": "2x4-8f", "kind": "bar", "length": 2438, "width": 89, "thickness": 38 },
+    { "name": "1×6材 6F", "id": "1x6-6f", "kind": "bar", "length": 1820, "width": 140, "thickness": 19 },
+    { "name": "2×6材 6F", "id": "2x6-6f", "kind": "bar", "length": 1820, "width": 140, "thickness": 38 },
+    { "name": "杉KD材 30×40", "id": "sugi-30x40", "kind": "bar", "length": 1820, "width": 40, "thickness": 30 },
+    { "name": "サブロク合板 12mm", "id": "gouhan-12", "kind": "sheet", "length": 1820, "width": 910, "thickness": 12 },
+    { "name": "サブロク合板 9mm", "id": "gouhan-9", "kind": "sheet", "length": 1820, "width": 910, "thickness": 9 },
+    { "name": "サブロク合板 5.5mm", "id": "gouhan-5.5", "kind": "sheet", "length": 1820, "width": 910, "thickness": 5.5 },
+    { "name": "パイン集成材 18mm", "id": "pine-18", "kind": "sheet", "length": 1820, "width": 910, "thickness": 18 },
+    { "name": "ラワンランバーコア 18mm", "id": "lumber-18", "kind": "sheet", "length": 1820, "width": 910, "thickness": 18 },
+    { "name": "シナベニヤ 4mm", "id": "shina-4", "kind": "sheet", "length": 1820, "width": 910, "thickness": 4 }
+  ],
+  "lengths": [300, 450, 600, 910, 1220, 1820, 1825, 2438, 2440, 3030, 3050],
+  "widths": [40, 89, 140, 184, 235, 300, 450, 600, 910, 1220]
+}
