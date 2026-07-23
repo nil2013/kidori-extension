@@ -290,6 +290,51 @@ describe("extractChainPoints", () => {
     expect(xs).toEqual([0.0, 1820.0]);
     expect(ys).toEqual([0.0, 89.0]);
   });
+
+  // S-08: 止め溝（end="stopped"）は走行方向軸に from/to が対象点として追加される。
+  it("dir=across の止め溝は走行方向（Y軸）に from/to が追加される", () => {
+    const stock = makeSheetStock();
+    const groove = makeGroove({
+      dir: "across",
+      pos: 248,
+      end: "stopped",
+      from: 30,
+      to: 170,
+    });
+    const part = makePart({ length: 1985, width: 200, features: [groove] });
+    const [xs, ys] = extractChainPoints(part, stock);
+    // X軸: pos(248) は従来どおり対象点。
+    expect(xs).toEqual([0.0, 248.0, 1985.0]);
+    // Y軸: 走行方向の from/to が追加される。
+    expect(ys).toEqual([0.0, 30.0, 170.0, 200.0]);
+  });
+
+  it("dir=along の止め溝は走行方向（X軸）に from/to が追加される", () => {
+    const stock = makeSheetStock();
+    const groove = makeGroove({
+      dir: "along",
+      pos: 100,
+      end: "stopped",
+      from: 50,
+      to: 400,
+    });
+    const part = makePart({ length: 1985, width: 200, features: [groove] });
+    const [xs, ys] = extractChainPoints(part, stock);
+    // X軸: 走行方向の from/to が追加される。
+    expect(xs).toEqual([0.0, 50.0, 400.0, 1985.0]);
+    // Y軸: pos(100) は従来どおり対象点。
+    expect(ys).toEqual([0.0, 100.0, 200.0]);
+  });
+
+  it("end=through の溝は from/to を持たず、走行方向軸に余分な対象点が現れない", () => {
+    const stock = makeSheetStock();
+    const groove = makeGroove({ dir: "across", pos: 248, end: "through" });
+    const part = makePart({ length: 1985, width: 200, features: [groove] });
+    const [xs, ys] = extractChainPoints(part, stock);
+    expect(xs).toEqual([0.0, 248.0, 1985.0]);
+    // 走行方向（Y軸）は {0, W} のみ。
+    expect(ys).toEqual([0.0, 200.0]);
+  });
 });
 
 describe("dedupeSorted", () => {

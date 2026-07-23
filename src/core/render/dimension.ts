@@ -14,6 +14,9 @@
  * 設計正本 §6 の要点:
  *   1. 対象点抽出: X軸 = {0, L} ∪ {across溝の中心 pos} ∪ {穴のx}。
  *      Y軸 = {0, W} ∪ {along溝の中心 pos} ∪ {穴のy}（溝は中心基準）。
+ *      S-08 是正: end="stopped" の溝は、走行方向の軸（dir=across なら Y 軸、
+ *      dir=along なら X 軸）に from/to も対象点として追加する（end="through" は
+ *      走行方向端まで達し {0,L}/{0,W} で既に表現されているため対象外）。
  *   2. 許容差 0.01mm でデデュープ → 昇順ソート → 隣接差分を区間値としてチェーン化。
  *      区間値は整数なら整数表記、小数は1桁。
  *   3. Xチェーンは部材下側第1段、全長寸法は第2段（さらに外側）。Yチェーンは左側に
@@ -49,10 +52,16 @@ export const CHAR_WIDTH_RATIO = 0.62;
  * 部材の寸法チェーン対象点を軸ごとに抽出する（設計正本 §6-1）。
  *
  * - X軸: {0, part.length} ∪ {dir="across" の groove.pos} ∪ {hole.x}
+ *   ∪ {dir="along" かつ end="stopped" の groove.from/to}
  * - Y軸: {0, effectiveWidth(part, stock)} ∪ {dir="along" の groove.pos} ∪ {hole.y}
+ *   ∪ {dir="across" かつ end="stopped" の groove.from/to}
  *
  * 溝は幅方向・長さ方向とも中心（pos）を対象点とする。正本の pos 定義が
  * 溝中心であるため、手描き図面の 248/486/724 のような中心基準の表記と一致する。
+ * S-08 是正: 止め溝（end="stopped"）は、pos に加えて走行方向の軸の from/to も
+ * 対象点に含める。これにより止め溝の開始・終了位置が寸法線上で読み取れるようになる。
+ * 通し溝（end="through"）は走行方向端まで達するため、対象点は {0,L}/{0,W} で
+ * 既に表現されており from/to は追加しない（そもそも through では from/to は null）。
  *
  * 戻り値は軸ごとに 0.01mm 許容差でデデュープ・昇順ソート済み（dedupeSorted 適用済み）。
  *
@@ -67,9 +76,17 @@ export function extractChainPoints(part: Part, stock: Stock): [number[], number[
     if (feature.type === "groove") {
       if (feature.dir === "across") {
         xs.push(feature.pos);
+        // S-08: 走行方向（Y軸）の止め位置を寸法対象点に追加する。
+        if (feature.end === "stopped") {
+          ys.push(feature.from!, feature.to!);
+        }
       } else {
         // "along"
         ys.push(feature.pos);
+        // S-08: 走行方向（X軸）の止め位置を寸法対象点に追加する。
+        if (feature.end === "stopped") {
+          xs.push(feature.from!, feature.to!);
+        }
       }
     } else {
       // "hole"

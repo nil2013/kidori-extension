@@ -610,6 +610,51 @@ describe("renderPartcard", () => {
     const faces = new Set(grooves.map((el) => el.attrs["data-face"]));
     expect(faces).toEqual(new Set(["front", "back"]));
   });
+
+  // S-07: 丸穴の加工面が図（破線区別）にも注記にも反映されること。
+  it("丸穴の face が front/back で破線描き分けされ、注記に面が含まれる", () => {
+    const stock: Stock = {
+      id: "pine-18",
+      label: "パイン集成材18mm",
+      kind: "sheet",
+      length: 1820,
+      width: 910,
+      thickness: 18,
+      price: 6356,
+    };
+    const holeFront: Hole = { type: "hole", face: "front", x: 100, y: 100, dia: 4, depth: 8 };
+    const holeBack: Hole = { type: "hole", face: "back", x: 500, y: 100, dia: 6, depth: 5 };
+    const part: Part = {
+      id: "side-1",
+      label: "側板1",
+      qty: 1,
+      stock: "pine-18",
+      length: 1200,
+      width: 200,
+      rot: false,
+      features: [holeFront, holeBack],
+    };
+
+    const svgText = renderPartcard(part, stock);
+    const root = parseXml(svgText);
+
+    const holes = findByRole(root, "hole", "circle");
+    expect(holes).toHaveLength(2);
+
+    const frontHole = holes.find((el) => el.attrs["data-face"] === "front");
+    const backHole = holes.find((el) => el.attrs["data-face"] === "back");
+    expect(frontHole).toBeDefined();
+    expect(backHole).toBeDefined();
+
+    // face=front は実線（stroke-dasharray 属性なし）。
+    expect(frontHole!.attrs["stroke-dasharray"]).toBeUndefined();
+    // face=back は溝の隠れ線規約と同一の破線属性を持つ。
+    expect(backHole!.attrs["stroke-dasharray"]).toBe("5,3");
+
+    const annotations = findByRole(root, "annotation", "text").map((el) => el.textContent);
+    expect(annotations.some((t) => t.includes("Φ4") && t.includes("（表面）"))).toBe(true);
+    expect(annotations.some((t) => t.includes("Φ6") && t.includes("（裏面）"))).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

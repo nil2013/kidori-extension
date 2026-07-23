@@ -187,13 +187,21 @@ function grooveLocalRect(
   return [x0, y0, x1 - x0, y1 - y0];
 }
 
+/**
+ * 加工面を注記用の日本語表記に変換する（設計正本 §6、溝の隠れ線規約と統一表記）。
+ * S-07 是正: front/back の生値をそのまま出さず、丸穴の注記とも表記を揃える。
+ */
+function faceLabel(face: "front" | "back"): string {
+  return face === "front" ? "（表面）" : "（裏面）";
+}
+
 function grooveNote(feature: Groove): string {
   if (feature.end === "through") {
-    return `溝 幅${fmt(feature.width)}×深${fmt(feature.depth)} 通し（${feature.face}）`;
+    return `溝 幅${fmt(feature.width)}×深${fmt(feature.depth)} 通し${faceLabel(feature.face)}`;
   }
   return (
     `溝 幅${fmt(feature.width)}×深${fmt(feature.depth)} ` +
-    `止め ${fmt(feature.from!)}–${fmt(feature.to!)}（${feature.face}）`
+    `止め ${fmt(feature.from!)}–${fmt(feature.to!)}${faceLabel(feature.face)}`
   );
 }
 
@@ -245,9 +253,9 @@ function renderGroove(
 
 function holeNote(feature: Hole): string {
   if (feature.depth === null) {
-    return `Φ${fmt(feature.dia)} 貫通`;
+    return `Φ${fmt(feature.dia)} 貫通${faceLabel(feature.face)}`;
   }
-  return `Φ${fmt(feature.dia)} 深${fmt(feature.depth)}`;
+  return `Φ${fmt(feature.dia)} 深${fmt(feature.depth)}${faceLabel(feature.face)}`;
 }
 
 function renderHole(
@@ -260,14 +268,28 @@ function renderHole(
   const [cx, cy] = transform.point(feature.x, feature.y);
   const r = transform.length(feature.dia) / 2.0;
 
-  const elements: Element[] = [
-    circle(cx, cy, r, {
+  // S-07 是正: face=back は溝と同じ隠れ線規約（破線）で描画し、加工面を取り違えないようにする。
+  let holeShape: Element;
+  if (feature.face === "front") {
+    holeShape = circle(cx, cy, r, {
       fill: "none",
       stroke: FEATURE_STROKE,
       stroke_width: STROKE_WIDTH,
       data_role: "hole",
-    }),
-  ];
+      data_face: "front",
+    });
+  } else {
+    holeShape = circle(cx, cy, r, {
+      fill: "none",
+      stroke: FEATURE_STROKE,
+      stroke_width: STROKE_WIDTH,
+      stroke_dasharray: "5,3",
+      data_role: "hole",
+      data_face: "back",
+    });
+  }
+
+  const elements: Element[] = [holeShape];
   if (feature.depth === null) {
     const mark = Math.max(r * 0.8, 3.0);
     elements.push(
