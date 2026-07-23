@@ -1,0 +1,81 @@
+{
+  "name": "kidori",
+  "displayName": "kidori",
+  "description": "規格材の木取り図・加工指示図に特化した VS Code 拡張。正本 project.yaml から SVG/PNG を自動生成する。",
+  "version": "0.4.0",
+  "publisher": "tnishimura",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "bin": {
+    "kidori": "./dist/cli.js"
+  },
+  "extensionDependencies": [
+    "redhat.vscode-yaml"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/project.yaml",
+    "workspaceContains:**/project.json",
+    "onLanguage:yaml"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "kidori.build",
+        "title": "kidori: ビルド（木取り図・加工指示図を再生成）"
+      },
+      {
+        "command": "kidori.openPreview",
+        "title": "kidori: プレビューを開く"
+      },
+      {
+        "command": "kidori.selectPlan",
+        "title": "kidori: 案を採用する"
+      }
+    ],
+    "configuration": {
+      "title": "kidori",
+      "properties": {
+        "kidori.buildOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "project.yaml / project.json の保存時に自動でビルドする。"
+        },
+        "kidori.png.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "SVG と同時に PNG も生成する。"
+        },
+        "kidori.png.scale": {
+          "type": "number",
+          "default": 2,
+          "description": "PNG 変換時のスケール倍率。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "package": "npm run build && vsce package --allow-missing-repository"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "yaml": "^2.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
