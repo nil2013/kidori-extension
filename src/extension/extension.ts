@@ -30,6 +30,7 @@ import {
 } from "../core/kidorifile";
 import { ScaffoldResult, availablePresets, createScaffold } from "../core/scaffold";
 import type { ResolvedStock } from "../core/stocks";
+import { assemblyTemplateBody } from "./assemblySnippet";
 import { KidoriPreview, PlanAction, PreviewData } from "./preview";
 import { createCompletionProvider } from "./completion";
 import {
@@ -201,6 +202,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand("kidori.init", async () => {
       await initCommand();
+    }),
+    vscode.commands.registerCommand("kidori.insertAssembly", async () => {
+      await insertAssemblyCommand();
     }),
   );
 }
@@ -665,6 +669,28 @@ async function initCommand(): Promise<void> {
   void vscode.window.showInformationMessage(
     `kidori: ${result.dir} を初期化しました（詳細は出力パネル「kidori」参照）`,
   );
+}
+
+/**
+ * 「kidori: 構成を挿入（parts＋assembly の雛形）」（`kidori.insertAssembly`）。
+ *
+ * SPECS.md §4c「一括挿入」。parts＋assemblies の雛形をスニペット（tabstop 付き）
+ * としてカーソル位置へ挿入する。展開後はただの YAML であり、マクロ的な参照や
+ * 独自構文は正本に残らない（雛形の内容そのものは assemblySnippet.ts が単一ソース）。
+ *
+ * kidori ファイル以外（アクティブエディタが無い場合を含む）では発動させない
+ * （contributor.isKidoriDocument が既存の判定手段。SPECS.md §3）。
+ */
+async function insertAssemblyCommand(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || !contributor.isKidoriDocument(editor.document)) {
+    void vscode.window.showWarningMessage(
+      "kidori: kidori ファイルを開いた状態で実行してください" +
+        "（parts＋assembly の雛形を挿入します）。",
+    );
+    return;
+  }
+  await editor.insertSnippet(new vscode.SnippetString(assemblyTemplateBody()));
 }
 
 /**

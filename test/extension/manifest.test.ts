@@ -90,4 +90,11 @@ describe("package.json の contributes / activationEvents", () => {
     expect(commandIds).toContain("kidori.openPreview");
     expect(commandIds).toContain("kidori.selectPlan");
   });
+
+  it("kidori.insertAssembly（parts＋assembly の雛形挿入）のコマンドが定義されている", () => {
+    const commandIds = (readManifest().contributes.commands as { command: string }[]).map(
+      (c) => c.command,
+    );
+    expect(commandIds).toContain("kidori.insertAssembly");
+  });
 });

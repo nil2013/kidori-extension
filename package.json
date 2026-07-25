@@ -47,6 +47,10 @@
       {
         "command": "kidori.selectPlan",
         "title": "kidori: 案を採用する"
+      },
+      {
+        "command": "kidori.insertAssembly",
+        "title": "kidori: 構成を挿入（parts＋assembly の雛形）"
       }
     ],
     "jsonValidation": [

@@ -205,6 +205,19 @@ export class Position {
   ) {}
 }
 
+/**
+ * vscode.SnippetString の最小実装。
+ *
+ * `kidori.insertAssembly`（extension.ts）が `editor.insertSnippet` に渡すために
+ * `new vscode.SnippetString(body)` する。展開（tabstop 解決）そのものは拡張
+ * ホストの責務であり、ここでは `.value` に本文を保持するだけでよい
+ * （completion.test.ts が独自にモックしているのと同じ最小さ。§ completion.ts
+ * 冒頭コメント参照）。
+ */
+export class SnippetString {
+  constructor(public value: string) {}
+}
+
 /** vscode.Range。(Position, Position) と (line,char,line,char) の両overloadに対応。 */
 export class Range {
   readonly start: Position;

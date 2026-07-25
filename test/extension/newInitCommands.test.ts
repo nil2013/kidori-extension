@@ -119,6 +119,7 @@ describe("コマンド登録（'command not found' の回帰検知）", () => {
     expect(__isCommandRegistered("kidori.build")).toBe(true);
     expect(__isCommandRegistered("kidori.openPreview")).toBe(true);
     expect(__isCommandRegistered("kidori.selectPlan")).toBe(true);
+    expect(__isCommandRegistered("kidori.insertAssembly")).toBe(true);
   });
 });
 
