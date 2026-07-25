@@ -184,7 +184,7 @@ function makeSettings(selectedPlan: string | null): Settings {
 
 function makeProject(settings: Settings, stocks: Stock[], parts: Part[]): Project {
   const meta: Meta = { project: "テスト棚", units: "mm", schemaVersion: "0.2" };
-  return { meta, settings, stocks, parts };
+  return { meta, settings, stocks, parts, assemblies: [] };
 }
 
 function makeBarPart(id: string, label: string, qty: number, length: number): Part {

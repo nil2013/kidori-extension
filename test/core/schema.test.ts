@@ -35,7 +35,7 @@ import {
 
 const SPECS_EXAMPLE_YAML = `\
 # yaml-language-server: $schema=./kidori.schema.json
-meta: { project: 書棚, units: mm, schemaVersion: "0.3" }
+meta: { project: 書棚, units: mm, schemaVersion: "0.4" }
 
 settings:
   kerf: 3            # 鋸刃厚（mm）
@@ -66,7 +66,7 @@ parts:
 /** conftest.py の minimal_project 相当（スキーマ層の検証対象として使う）。 */
 function minimalProject(): any {
   return {
-    meta: { project: "テスト棚", units: "mm", schemaVersion: "0.3" },
+    meta: { project: "テスト棚", units: "mm", schemaVersion: "0.4" },
     settings: { kerf: 3, edgeTrim: 5, candidates: 3, selectedPlan: null },
     stocks: [
       {
@@ -145,6 +145,56 @@ describe("スキーマの構造", () => {
     expect(schema.type).toBe("object");
     expect(schema.additionalProperties).toBe(false);
     expect(schema.required).toEqual(["meta", "stocks", "parts"]);
+  });
+
+  it("v0.7: assemblies は任意区画（required に入らない）", () => {
+    const schema = buildSchema([]) as any;
+    const assemblies = schema.properties.assemblies;
+
+    expect(schema.required).not.toContain("assemblies");
+    expect(assemblies.type).toBe("array");
+    expect(assemblies.items.required).toEqual(["id", "contains"]);
+    expect(assemblies.items.additionalProperties).toBe(false);
+  });
+
+  it("v0.7: contains の値は 1 以上の整数（自由キーのマップ）", () => {
+    const schema = buildSchema([]) as any;
+    const contains = schema.properties.assemblies.items.properties.contains;
+
+    expect(contains.type).toBe("object");
+    expect(contains.additionalProperties).toEqual({ type: "integer", minimum: 1 });
+  });
+
+  it("v0.7: marks は ref 形式と w/h 形式の oneOf（併記を弾く）", () => {
+    const schema = buildSchema([]) as any;
+    const marks = schema.properties.assemblies.items.properties.marks;
+    const branches = marks.items.oneOf as any[];
+
+    expect(branches).toHaveLength(2);
+    expect(Object.keys(branches[0].properties)).toContain("ref");
+    expect(Object.keys(branches[0].properties)).not.toContain("w");
+    expect(Object.keys(branches[1].properties)).toContain("w");
+    expect(Object.keys(branches[1].properties)).not.toContain("ref");
+    for (const branch of branches) {
+      expect(branch.additionalProperties).toBe(false);
+      expect(branch.required).toContain("on");
+      expect(branch.required).toContain("face");
+      // x/y は省略可（既定 0）。
+      expect(branch.required).not.toContain("x");
+      expect(branch.properties.x.default).toBe(0);
+      expect(branch.properties.y.default).toBe(0);
+    }
+  });
+
+  it("v0.7: parts[].qty は必須ではない（assemblies から導出できるため）", () => {
+    const schema = buildSchema([]) as any;
+
+    expect(schema.properties.parts.items.required).toEqual([
+      "id",
+      "label",
+      "stock",
+      "length",
+    ]);
   });
 
   it("stocks が空のとき parts[].stock に enum が無い", () => {
@@ -269,7 +319,7 @@ describe("スキーマ検証", () => {
       dia: 4,
     };
     const project = {
-      meta: { project: "p", units: "mm", schemaVersion: "0.3" },
+      meta: { project: "p", units: "mm", schemaVersion: "0.4" },
       stocks: [
         { id: "s1", label: "s1", kind: "sheet", length: 1000, width: 1000, thickness: 10 },
       ],
@@ -465,5 +515,37 @@ describe("DESCRIPTIONS", () => {
     expect(desc).toContain("下端からの Y 座標");
     // 既存の情報（寸法線抽出での中心基準扱い）を落としていないこと。
     expect(desc).toContain("中心基準");
+  });
+
+  it("marks.x/y は座標規約（領域の左下角基準・省略時 0）を明記する", () => {
+    for (const key of ["marks.x", "marks.y"]) {
+      const desc = DESCRIPTIONS[key];
+      expect(desc, key).toContain("左下角");
+      expect(desc, key).toContain("部材ローカル原点側");
+      expect(desc, key).toContain("省略時 0");
+      // hole の x/y（中心基準）と同名で意味が異なることを警告している。
+      expect(desc, key).toContain("中心基準");
+    }
+  });
+
+  it("marks.ref は w/h との排他と導出規則を明記する", () => {
+    const desc = DESCRIPTIONS["marks.ref"];
+    expect(desc).toContain("thickness");
+    expect(desc).toContain("実効幅");
+    expect(desc).toContain("38×89");
+    expect(desc).toContain("排他");
+    // 回転接触は w/h の直接指定で書く（rotated 等の拡張は設けない）。
+    expect(desc).toContain("90°");
+    for (const key of ["marks.w", "marks.h"]) {
+      expect(DESCRIPTIONS[key], key).toContain("排他");
+    }
+  });
+
+  it("v0.7 追加フィールドの説明がある", () => {
+    expect(DESCRIPTIONS["assemblies.id"]).toContain("ファイル名");
+    expect(DESCRIPTIONS["assemblies.contains"]).toContain("導出");
+    expect(DESCRIPTIONS["assemblies.marks"]).toContain("加工指示図");
+    expect(DESCRIPTIONS["marks.on"]).toContain("contains");
+    expect(DESCRIPTIONS["parts.qty"]).toContain("contains");
   });
 });

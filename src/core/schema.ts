@@ -77,7 +77,10 @@ export const DESCRIPTIONS: Record<string, string> = {
     "部材 ID。出力ファイル名（<stem>.out/parts/{id}.svg）に使われるため、" +
     "英数字で始まり英数字・「.」「_」「-」のみ使用できる。",
   "parts.label": "表示ラベル。",
-  "parts.qty": "必要数量。",
+  "parts.qty":
+    "必要数量。assemblies を使う場合は省略でき、全構成の contains 合計から導出される。" +
+    "併記して合計と食い違う場合は warning。どの構成にも含まれない形状で省略すると" +
+    "必要数を導出できないため error になる。",
   "parts.stock":
     "使用する原材の id 参照。stocks の id が補完候補になる（存在しない id はここでエラーになる）。",
   "parts.length": "部材の長さ（mm）。",
@@ -104,6 +107,43 @@ export const DESCRIPTIONS: Record<string, string> = {
   "hole.y": "部材ローカル座標系での中心 Y 座標（mm）。",
   "hole.dia": "径（mm）。",
   "hole.depth": "深さ（mm）。省略時は貫通を表す。",
+  assemblies:
+    "構成グルーピング（任意区画）。「どの形状の部材が何個でひと組か」の宣言と、" +
+    "取り付けシロ（marks）を置く。割付は導出後の合計数だけを見るため、" +
+    "構成の区別が木取り図・歩留まりに影響することはない。",
+  "assemblies.id":
+    "構成 ID。マークを持つ形状の変種面ファイル名（<stem>.out/parts/{assembly}-{形状id}.svg）" +
+    "に使われるため、英数字で始まり英数字・「.」「_」「-」のみ使用できる。",
+  "assemblies.label": '表示ラベル（例: "ウマ1号機"）。省略可。',
+  "assemblies.contains":
+    "形状 id → 個数（1以上の整数）のマップ。部材必要数は全 assembly の合計から" +
+    "導出され、parts[].qty は省略できる。同一形状は構成をまたいでまとめて割り付けられる。",
+  "assemblies.marks":
+    "取り付けシロ（非切削マーク）の配列。相手部材が当たる領域を示すだけで切削は伴わない。" +
+    "描画は加工指示図のみ（木取り図には描かない）。割付エンジンには一切影響しない" +
+    "（材を消費せず、kerf・歩留まり計算にも入らない）。",
+  "marks.on":
+    "マークを付ける対象形状（parts[].id）。その構成の contains に含まれる形状でなければならない。",
+  "marks.face": "加工面。front または back。",
+  "marks.x":
+    "マーク領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。" +
+    "hole の x（中心基準）とは基準が異なるので注意すること。",
+  "marks.y":
+    "マーク領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。" +
+    "hole の y（中心基準）とは基準が異なるので注意すること。",
+  "marks.w":
+    "マーク領域の幅（mm、X 方向）。h とセットで指定する。ref とは排他" +
+    "（併記も、ref・w/h ともに無いのも error）。",
+  "marks.h":
+    "マーク領域の高さ（mm、Y 方向）。w とセットで指定する。ref とは排他" +
+    "（併記も、ref・w/h ともに無いのも error）。",
+  "marks.ref":
+    "相手形状（parts[].id）の断面寸法から領域寸法を導出する。w = 相手形状が使う原材の" +
+    "thickness、h = 相手形状の実効幅（bar なら原材幅、sheet なら part.width）" +
+    "（例: ref: leg → 2×4 の 38×89）。参照先の寸法変更に自動追従する。" +
+    "w/h とは排他（併記は error）。相手部材を 90° 倒して当てる場合は w/h で直接指定する" +
+    "（面ごとに導出値を変える指定は設けない）。",
+  "marks.note": '図に添える注記（例: "足当たり面"）。省略可。',
 };
 
 function grooveSchema(): Record<string, unknown> {
@@ -148,6 +188,89 @@ function holeSchema(): Record<string, unknown> {
         type: ["number", "null"],
         exclusiveMinimum: 0,
         description: DESCRIPTIONS["hole.depth"],
+      },
+    },
+  };
+}
+
+/**
+ * marks[] の1要素（SPECS.md §4c）。
+ *
+ * 領域寸法の指定は `ref`（相手形状の断面寸法から導出）と `w`/`h`（直接指定）の
+ * **排他**であり、`additionalProperties: false` を持つ2形式の `oneOf` で表現する
+ * （併記は一致0件になり、エディタ上でも即座に赤線になる）。
+ * 排他規則の権威は層2（意味検証）にある（parts[].stock の enum と
+ * checkStockReferences の関係と同じ役割分担）。
+ */
+function markSchema(): Record<string, unknown> {
+  const common = {
+    on: { type: "string", description: DESCRIPTIONS["marks.on"] },
+    face: { enum: ["front", "back"], description: DESCRIPTIONS["marks.face"] },
+    x: { type: "number", minimum: 0, default: 0, description: DESCRIPTIONS["marks.x"] },
+    y: { type: "number", minimum: 0, default: 0, description: DESCRIPTIONS["marks.y"] },
+    note: { type: "string", description: DESCRIPTIONS["marks.note"] },
+  };
+  return {
+    title: "取り付けシロ（ref で断面寸法を導出、または w・h を直接指定）",
+    oneOf: [
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["on", "face", "ref"],
+        properties: {
+          ...common,
+          ref: { type: "string", description: DESCRIPTIONS["marks.ref"] },
+        },
+      },
+      {
+        type: "object",
+        additionalProperties: false,
+        // w/h を required にしない: 「ref も w/h も無い（領域寸法が決まらない）」は
+        // 層2（意味検証）が具体的なメッセージで error にする。ここで required に
+        // すると層1の oneOf 不一致で潰れ、層2の診断に到達しなくなる。
+        required: ["on", "face"],
+        properties: {
+          ...common,
+          w: {
+            type: "number",
+            exclusiveMinimum: 0,
+            description: DESCRIPTIONS["marks.w"],
+          },
+          h: {
+            type: "number",
+            exclusiveMinimum: 0,
+            description: DESCRIPTIONS["marks.h"],
+          },
+        },
+      },
+    ],
+  };
+}
+
+/** assemblies[] の1要素（SPECS.md §4c）。 */
+function assemblySchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["id", "contains"],
+    properties: {
+      id: {
+        type: "string",
+        pattern: ID_PATTERN,
+        description: DESCRIPTIONS["assemblies.id"],
+      },
+      label: { type: "string", description: DESCRIPTIONS["assemblies.label"] },
+      contains: {
+        type: "object",
+        description: DESCRIPTIONS["assemblies.contains"],
+        // 形状 id は任意の文字列キーなので、値の型だけを additionalProperties で縛る。
+        additionalProperties: { type: "integer", minimum: 1 },
+      },
+      marks: {
+        type: "array",
+        default: [],
+        description: DESCRIPTIONS["assemblies.marks"],
+        items: markSchema(),
       },
     },
   };
@@ -206,7 +329,9 @@ function partSchema(stockIds: readonly string[]): Record<string, unknown> {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["id", "label", "qty", "stock", "length"],
+    // qty は必須ではない: assemblies の contains 合計から導出できるため（§4c）。
+    // 「導出もできず明記も無い」場合の error は意味検証層（loader）が出す。
+    required: ["id", "label", "stock", "length"],
     properties: {
       id: { type: "string", pattern: ID_PATTERN, description: DESCRIPTIONS["parts.id"] },
       label: { type: "string", description: DESCRIPTIONS["parts.label"] },
@@ -231,7 +356,10 @@ function partSchema(stockIds: readonly string[]): Record<string, unknown> {
         type: "array",
         default: [],
         description: DESCRIPTIONS["parts.features"],
-        items: { oneOf: [grooveSchema(), holeSchema()] },
+        items: {
+          title: "加工フィーチャ（溝 groove / 丸穴 hole）",
+          oneOf: [grooveSchema(), holeSchema()],
+        },
       },
     },
   };
@@ -325,6 +453,11 @@ export function buildSchema(stockIds: readonly string[]): Record<string, unknown
       parts: {
         type: "array",
         items: partSchema(stockIds),
+      },
+      assemblies: {
+        type: "array",
+        description: DESCRIPTIONS["assemblies"],
+        items: assemblySchema(),
       },
     },
   };

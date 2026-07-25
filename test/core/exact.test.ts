@@ -27,6 +27,7 @@ function makeProject(overrides: {
     },
     stocks: overrides.stocks,
     parts: overrides.parts,
+    assemblies: [],
   };
 }
 

@@ -41,7 +41,7 @@ const BAR_LIMIT = BAR_LENGTH - 2 * EDGE_TRIM; // 1810
  */
 const SPECS_EXAMPLE_YAML = `\
 # yaml-language-server: $schema=./kidori.schema.json
-meta: { project: 書棚, units: mm, schemaVersion: "0.3" }
+meta: { project: 書棚, units: mm, schemaVersion: "0.4" }
 
 settings:
   kerf: 3            # 鋸刃厚（mm）
@@ -72,7 +72,7 @@ parts:
 /** 物理的に整合する最小の正当プロジェクト（conftest.py の minimal_project 相当）。 */
 function minimalProject(): any {
   return {
-    meta: { project: "テスト棚", units: "mm", schemaVersion: "0.3" },
+    meta: { project: "テスト棚", units: "mm", schemaVersion: "0.4" },
     settings: {
       kerf: 3,
       edgeTrim: 5,
@@ -852,22 +852,22 @@ describe("v0.6: stocks[].preset", () => {
   });
 });
 
-describe("v0.6: SUPPORTED_SCHEMA_VERSION", () => {
-  it("想定バージョンは 0.3（SPECS.md v0.6）", () => {
-    expect(SUPPORTED_SCHEMA_VERSION).toBe("0.3");
+describe("v0.7: SUPPORTED_SCHEMA_VERSION", () => {
+  it("想定バージョンは 0.4（SPECS.md v0.7）", () => {
+    expect(SUPPORTED_SCHEMA_VERSION).toBe("0.4");
   });
 
-  it("0.3 は warning を出さない", () => {
+  it("0.4 は warning を出さない", () => {
     const data = minimalProject();
-    data.meta.schemaVersion = "0.3";
+    data.meta.schemaVersion = "0.4";
 
     const { issues } = loadProjectFromRaw(data);
     expect(issues.some((i) => i.path === "meta.schemaVersion")).toBe(false);
   });
 
-  it("旧版 0.2 の既存ファイルも warning のみでビルド可能（仕様自身の救済経路）", () => {
+  it("旧版 0.3 の既存ファイルも warning のみでビルド可能（仕様自身の救済経路）", () => {
     const data = minimalProject();
-    data.meta.schemaVersion = "0.2";
+    data.meta.schemaVersion = "0.3";
 
     const { project, issues } = loadProjectFromRaw(data);
 

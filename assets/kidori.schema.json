@@ -173,7 +173,6 @@
         "required": [
           "id",
           "label",
-          "qty",
           "stock",
           "length"
         ],
@@ -190,7 +189,7 @@
           "qty": {
             "type": "integer",
             "exclusiveMinimum": 0,
-            "description": "必要数量。"
+            "description": "必要数量。assemblies を使う場合は省略でき、全構成の contains 合計から導出される。併記して合計と食い違う場合は warning。どの構成にも含まれない形状で省略すると必要数を導出できないため error になる。"
           },
           "stock": {
             "type": "string",
@@ -216,6 +215,7 @@
             "default": [],
             "description": "加工フィーチャ（溝・丸穴）の配列。",
             "items": {
+              "title": "加工フィーチャ（溝 groove / 丸穴 hole）",
               "oneOf": [
                 {
                   "type": "object",
@@ -251,7 +251,7 @@
                     "pos": {
                       "type": "number",
                       "minimum": 0,
-                      "description": "基準端から溝中心までの距離（mm）。寸法線抽出でも中心基準として扱う。"
+                      "description": "基準端（部材ローカル原点側の端）から溝中心までの距離（mm）。across は左端からの X 座標、along は下端からの Y 座標。寸法線抽出でも中心基準として扱う。"
                     },
                     "width": {
                       "type": "number",
@@ -326,6 +326,136 @@
                       ],
                       "exclusiveMinimum": 0,
                       "description": "深さ（mm）。省略時は貫通を表す。"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "assemblies": {
+      "type": "array",
+      "description": "構成グルーピング（任意区画）。「どの形状の部材が何個でひと組か」の宣言と、取り付けシロ（marks）を置く。割付は導出後の合計数だけを見るため、構成の区別が木取り図・歩留まりに影響することはない。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "contains"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "description": "構成 ID。マークを持つ形状の変種面ファイル名（<stem>.out/parts/{assembly}-{形状id}.svg）に使われるため、英数字で始まり英数字・「.」「_」「-」のみ使用できる。"
+          },
+          "label": {
+            "type": "string",
+            "description": "表示ラベル（例: \"ウマ1号機\"）。省略可。"
+          },
+          "contains": {
+            "type": "object",
+            "description": "形状 id → 個数（1以上の整数）のマップ。部材必要数は全 assembly の合計から導出され、parts[].qty は省略できる。同一形状は構成をまたいでまとめて割り付けられる。",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "marks": {
+            "type": "array",
+            "default": [],
+            "description": "取り付けシロ（非切削マーク）の配列。相手部材が当たる領域を示すだけで切削は伴わない。描画は加工指示図のみ（木取り図には描かない）。割付エンジンには一切影響しない（材を消費せず、kerf・歩留まり計算にも入らない）。",
+            "items": {
+              "title": "取り付けシロ（ref で断面寸法を導出、または w・h を直接指定）",
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "on",
+                    "face",
+                    "ref"
+                  ],
+                  "properties": {
+                    "on": {
+                      "type": "string",
+                      "description": "マークを付ける対象形状（parts[].id）。その構成の contains に含まれる形状でなければならない。"
+                    },
+                    "face": {
+                      "enum": [
+                        "front",
+                        "back"
+                      ],
+                      "description": "加工面。front または back。"
+                    },
+                    "x": {
+                      "type": "number",
+                      "minimum": 0,
+                      "default": 0,
+                      "description": "マーク領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。hole の x（中心基準）とは基準が異なるので注意すること。"
+                    },
+                    "y": {
+                      "type": "number",
+                      "minimum": 0,
+                      "default": 0,
+                      "description": "マーク領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。hole の y（中心基準）とは基準が異なるので注意すること。"
+                    },
+                    "note": {
+                      "type": "string",
+                      "description": "図に添える注記（例: \"足当たり面\"）。省略可。"
+                    },
+                    "ref": {
+                      "type": "string",
+                      "description": "相手形状（parts[].id）の断面寸法から領域寸法を導出する。w = 相手形状が使う原材のthickness、h = 相手形状の実効幅（bar なら原材幅、sheet なら part.width）（例: ref: leg → 2×4 の 38×89）。参照先の寸法変更に自動追従する。w/h とは排他（併記は error）。相手部材を 90° 倒して当てる場合は w/h で直接指定する（面ごとに導出値を変える指定は設けない）。"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "on",
+                    "face"
+                  ],
+                  "properties": {
+                    "on": {
+                      "type": "string",
+                      "description": "マークを付ける対象形状（parts[].id）。その構成の contains に含まれる形状でなければならない。"
+                    },
+                    "face": {
+                      "enum": [
+                        "front",
+                        "back"
+                      ],
+                      "description": "加工面。front または back。"
+                    },
+                    "x": {
+                      "type": "number",
+                      "minimum": 0,
+                      "default": 0,
+                      "description": "マーク領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。hole の x（中心基準）とは基準が異なるので注意すること。"
+                    },
+                    "y": {
+                      "type": "number",
+                      "minimum": 0,
+                      "default": 0,
+                      "description": "マーク領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。hole の y（中心基準）とは基準が異なるので注意すること。"
+                    },
+                    "note": {
+                      "type": "string",
+                      "description": "図に添える注記（例: \"足当たり面\"）。省略可。"
+                    },
+                    "w": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "description": "マーク領域の幅（mm、X 方向）。h とセットで指定する。ref とは排他（併記も、ref・w/h ともに無いのも error）。"
+                    },
+                    "h": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "description": "マーク領域の高さ（mm、Y 方向）。w とセットで指定する。ref とは排他（併記も、ref・w/h ともに無いのも error）。"
                     }
                   }
                 }

@@ -123,7 +123,12 @@ export interface Part {
   id: string;
   /** 表示ラベル。 */
   label: string;
-  /** 必要数量。 */
+  /**
+   * 必要数量。正本では `assemblies` を使う場合に省略でき、その場合は全構成の
+   * `contains` 合計から導出される（SPECS.md §4c）。**このモデルの上では常に
+   * 確定した数値**であり、下流（割付エンジン・描画）は無条件に読んでよい
+   * （導出できない場合は loader が error を出し Project が組み上がらない）。
+   */
   qty: number;
   /** 使用する原材の id 参照。 */
   stock: string;
@@ -140,12 +145,83 @@ export interface Part {
   features: Feature[];
 }
 
+/**
+ * assemblies[].marks[] の1要素（正本に書かれたままの形。SPECS.md §4c）。
+ *
+ * 非切削マーク（取り付けシロ）。相手部材が当たる領域を加工指示図にだけ描く。
+ * 割付エンジンには一切影響しない（材を消費せず、kerf・歩留まりにも入らない）。
+ *
+ * 領域寸法の指定は排他の2形式（意味検証層で担保）:
+ * - `ref`: 相手形状の断面寸法（w=厚み・h=実効幅）から導出する（`resolveMark`）。
+ * - `w`/`h`: 直接指定する。
+ */
+export interface Mark {
+  /** マークを付ける対象形状（parts[].id）。その assembly の contains に含まれること。 */
+  on: string;
+  /** 加工面。"front" または "back"。 */
+  face: "front" | "back";
+  /** 領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。 */
+  x: number;
+  /** 領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。 */
+  y: number;
+  /** 領域の幅（mm、X 方向）。`ref` 指定時は null。 */
+  w: number | null;
+  /** 領域の高さ（mm、Y 方向）。`ref` 指定時は null。 */
+  h: number | null;
+  /** 断面寸法の導出元となる相手形状（parts[].id）。`w`/`h` と排他。 */
+  ref: string | null;
+  /** 図に添える注記（例: "足当たり面"）。省略時は null。 */
+  note: string | null;
+}
+
+/**
+ * `ref` を解決して領域寸法（w/h）が確定した Mark（描画層が受け取る形）。
+ *
+ * `resolveMarks`（marks.ts）が Mark から生成する。描画層は w/h が数値である
+ * ことを無条件に前提にしてよい。
+ */
+export interface ResolvedMark {
+  /** マークを付ける対象形状（parts[].id）。 */
+  on: string;
+  /** 加工面。"front" または "back"。 */
+  face: "front" | "back";
+  /** 領域の左下角の X 座標（mm）。 */
+  x: number;
+  /** 領域の左下角の Y 座標（mm）。 */
+  y: number;
+  /** 領域の幅（mm、X 方向）。 */
+  w: number;
+  /** 領域の高さ（mm、Y 方向）。 */
+  h: number;
+  /** 寸法の導出元（`ref` 指定だった場合の形状 id。直接指定なら null）。 */
+  ref: string | null;
+  /** 図に添える注記。無ければ null。 */
+  note: string | null;
+}
+
+/** assemblies[] の1要素。構成グルーピングと取り付けシロ（SPECS.md §4c）。 */
+export interface Assembly {
+  /**
+   * 構成 ID。変種面の出力ファイル名（parts/{assembly}-{形状id}.svg）に
+   * 使われるため、parts[].id と同じ ID 安全性検査を受ける（意味検証層）。
+   */
+  id: string;
+  /** 表示ラベル（例: "ウマ1号機"）。省略時は null。 */
+  label: string | null;
+  /** 形状 id → 個数のマップ。部材必要数はこの合計から導出される（§4c）。 */
+  contains: Record<string, number>;
+  /** 取り付けシロ（非切削マーク）の配列。 */
+  marks: Mark[];
+}
+
 /** 正本ファイル読込・検証後のトップレベルモデル。 */
 export interface Project {
   meta: Meta;
   settings: Settings;
   stocks: Stock[];
   parts: Part[];
+  /** 構成グルーピング（任意区画。区画不在なら空配列。SPECS.md §4c）。 */
+  assemblies: Assembly[];
 }
 
 /** settings.rank のデフォルト値。 */

@@ -20,7 +20,7 @@
 
 ```yaml
 # yaml-language-server: $schema=./kidori.schema.json
-meta: { project: 書棚, units: mm, schemaVersion: "0.3" }
+meta: { project: 書棚, units: mm, schemaVersion: "0.4" }
 
 settings:
   kerf: 3                     # 鋸刃厚（mm）。切断ごとに消費される

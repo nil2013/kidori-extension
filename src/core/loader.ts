@@ -13,8 +13,8 @@
  * 3. モデル構築（YAML キー → TypeScript プロパティ名の対応をここで完結させる。
  *    キーはキャメルケースのまま。Groove の "from" もそのまま `from` に格納する）。
  * 4. 層2: 意味検証（設計正本 §2 の9項目 ＋ v0.4 追加の rank / exact /
- *    selectedPlan "X" / ID 安全性。相互参照・物理条件などスキーマでは
- *    表現しきれない検証）。
+ *    selectedPlan "X" / ID 安全性 ＋ v0.7 追加の assemblies / marks / qty 導出。
+ *    相互参照・物理条件などスキーマでは表現しきれない検証）。
  *
  * `loadProject(filePath)` はこのパイプライン全体を実行し、error があれば
  * `ProjectError` を送出、warning のみなら `{ project, warnings }` を返す。
@@ -25,14 +25,17 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { parse } from "yaml";
 
 import { Issue, ProjectError } from "./errors";
+import { markVariantStem } from "./marks";
 import { EPS } from "./packing/common";
 import { ID_PATTERN, buildSchema, buildStocksFileSchema } from "./schema";
 import {
+  Assembly,
   DEFAULT_RANK,
   ExactMode,
   Feature,
   Groove,
   Hole,
+  Mark,
   Meta,
   Part,
   Project,
@@ -43,13 +46,14 @@ import {
 } from "./types";
 
 /**
- * meta.schemaVersion の想定値（SPECS.md v0.6 で 0.3）。
+ * meta.schemaVersion の想定値（SPECS.md v0.7 で 0.4）。
  *
- * 不一致は warning のまま維持する（設計正本 §2 層2 項目7）。旧版（"0.2"）の
+ * 不一致は warning のまま維持する（設計正本 §2 層2 項目7）。旧版（"0.2"/"0.3"）の
  * 既存ファイルもそのままビルドできる＝仕様自身の救済経路であり、専用の
- * レガシー変換経路は設けない。
+ * レガシー変換経路は設けない（0.4 で追加された assemblies は任意区画なので、
+ * 構造上 0.3 のファイルはそのまま有効な 0.4 のファイルでもある）。
  */
-export const SUPPORTED_SCHEMA_VERSION = "0.3";
+export const SUPPORTED_SCHEMA_VERSION = "0.4";
 
 /**
  * スキーマ検証 keyword → 日本語ラベルの対応表。
@@ -67,7 +71,7 @@ const VALIDATOR_JA: Record<string, string> = {
   exclusiveMinimum: "値は正の数でなければなりません",
   maximum: "値が大きすぎます",
   uniqueItems: "配列の要素が重複しています",
-  oneOf: "溝（groove）または丸穴（hole）のいずれの形式にも一致しません",
+  oneOf: "排他的な形式のいずれにも一致しません",
   anyOf: "許可されている形式のいずれにも一致しません",
 };
 
@@ -195,7 +199,8 @@ type SchemaNode = Record<string, any>;
  *
  * 解釈するキーワード: type / enum / const / minLength / minimum /
  * exclusiveMinimum / maximum / required / properties /
- * additionalProperties: false / items / uniqueItems / oneOf / anyOf。
+ * additionalProperties（false またはサブスキーマ）/ items / uniqueItems /
+ * oneOf / anyOf / title（oneOf 不一致メッセージの文脈表示にのみ使う）。
  *
  * `pattern` は意図的に解釈しない: stocks[].id / parts[].id の pattern は
  * エディタ支援（VS Code 上の赤線）用であり、ID 安全性の権威判定は層2
@@ -319,6 +324,22 @@ function validateNode(
           detail: `未知のキー: ${unknownKeys.map((k) => `'${k}'`).join(", ")}。`,
         });
       }
+    } else if (isPlainObject(schema.additionalProperties)) {
+      // 自由キーのマップ（assemblies[].contains 等）の値をサブスキーマで検証する。
+      // **キーは Issue.path に載せない**: キーはユーザー制御の文字列（形状 id は
+      // 「.」を含みうる）であり、path のセグメントに混ぜると path → YAML 行の
+      // 写像が壊れるため。キー名はメッセージ側に書く（意味検証層と同じ規約）。
+      const subSchema = schema.additionalProperties as SchemaNode;
+      for (const [key, v] of Object.entries(value)) {
+        if (key in props) {
+          continue;
+        }
+        const sub: RawSchemaError[] = [];
+        validateNode(v, subSchema, [], sub);
+        for (const e of sub) {
+          out.push({ path, keyword: e.keyword, detail: `キー '${key}': ${e.detail}` });
+        }
+      }
     }
     for (const [key, sub] of Object.entries(props)) {
       if (key in value) {
@@ -334,10 +355,13 @@ function validateNode(
       return errs.length === 0;
     }).length;
     if (matched !== 1) {
+      // title があれば文脈（どの排他形式の話か）を添える。keyword → 日本語ラベルの
+      // 対応表は1本しかないため、形式の説明はスキーマ側（title）に持たせる。
+      const context = typeof schema.title === "string" ? `${schema.title}: ` : "";
       out.push({
         path,
         keyword: "oneOf",
-        detail: `一致した形式は ${matched} 件です（ちょうど1件必要）。`,
+        detail: `${context}一致した形式は ${matched} 件です（ちょうど1件必要）。`,
       });
     }
   }
@@ -436,6 +460,59 @@ function buildStock(s: Record<string, any>): Stock {
   return stock;
 }
 
+/** assemblies[].marks[] の1要素を素の値から構築する（ref/w/h の排他は層2が検証）。 */
+function buildMark(m: Record<string, any>): Mark {
+  return {
+    on: m.on,
+    face: m.face,
+    // x/y の省略時は 0（領域の左下角＝部材ローカル原点側の角が基準。SPECS.md §4c）。
+    x: m.x !== null && m.x !== undefined ? Number(m.x) : 0,
+    y: m.y !== null && m.y !== undefined ? Number(m.y) : 0,
+    w: m.w !== null && m.w !== undefined ? Number(m.w) : null,
+    h: m.h !== null && m.h !== undefined ? Number(m.h) : null,
+    ref: typeof m.ref === "string" ? m.ref : null,
+    note: typeof m.note === "string" ? m.note : null,
+  };
+}
+
+/** assemblies[] の1要素を素の値から構築する。 */
+function buildAssembly(a: Record<string, any>): Assembly {
+  const contains: Record<string, number> = {};
+  if (isPlainObject(a.contains)) {
+    for (const [partId, n] of Object.entries(a.contains)) {
+      contains[partId] = Math.trunc(Number(n));
+    }
+  }
+  return {
+    id: a.id,
+    label: typeof a.label === "string" ? a.label : null,
+    contains,
+    marks: ((a.marks ?? []) as Record<string, any>[]).map(buildMark),
+  };
+}
+
+/**
+ * 形状 id に対する contains 合計を返す（どの構成にも現れなければ null）。
+ *
+ * SPECS.md §4c: 部材必要数は**全 assembly の合計**から導出される。
+ * 「1件も現れない」と「合計 0」を区別するため、非所属は null で返す。
+ */
+export function containedQty(
+  assemblies: readonly Assembly[],
+  partId: string,
+): number | null {
+  let total = 0;
+  let found = false;
+  for (const a of assemblies) {
+    const n = a.contains[partId];
+    if (typeof n === "number" && Number.isFinite(n)) {
+      found = true;
+      total += n;
+    }
+  }
+  return found ? total : null;
+}
+
 function buildProject(raw: Record<string, any>): Project {
   const rawMeta = raw.meta as Record<string, any>;
   const meta: Meta = {
@@ -459,18 +536,33 @@ function buildProject(raw: Record<string, any>): Project {
 
   const stocks: Stock[] = ((raw.stocks ?? []) as Record<string, any>[]).map(buildStock);
 
-  const parts: Part[] = ((raw.parts ?? []) as Record<string, any>[]).map((p) => ({
-    id: p.id,
-    label: p.label,
-    qty: Math.trunc(p.qty),
-    stock: p.stock,
-    length: Number(p.length),
-    width: p.width !== null && p.width !== undefined ? Number(p.width) : null,
-    rot: p.rot !== undefined ? Boolean(p.rot) : true,
-    features: ((p.features ?? []) as Record<string, any>[]).map(buildFeature),
-  }));
+  const assemblies: Assembly[] = ((raw.assemblies ?? []) as Record<string, any>[]).map(
+    buildAssembly,
+  );
 
-  return { meta, settings, stocks, parts };
+  const parts: Part[] = ((raw.parts ?? []) as Record<string, any>[]).map((p) => {
+    // qty の導出（SPECS.md §4c）:
+    //   1. いずれかの構成の contains に現れる → 全構成の合計が勝つ
+    //      （qty 併記との食い違いは checkQtyDerivation が warning にする）。
+    //   2. どの構成にも現れない → 明記された qty を使う。無ければ導出不能で
+    //      checkQtyDerivation が error にする（ここでは 0 を置くが、error のため
+    //      Project は組み上がらず下流には渡らない）。
+    const derived = containedQty(assemblies, p.id);
+    const declared =
+      p.qty !== null && p.qty !== undefined ? Math.trunc(Number(p.qty)) : null;
+    return {
+      id: p.id,
+      label: p.label,
+      qty: derived ?? declared ?? 0,
+      stock: p.stock,
+      length: Number(p.length),
+      width: p.width !== null && p.width !== undefined ? Number(p.width) : null,
+      rot: p.rot !== undefined ? Boolean(p.rot) : true,
+      features: ((p.features ?? []) as Record<string, any>[]).map(buildFeature),
+    };
+  });
+
+  return { meta, settings, stocks, parts, assemblies };
 }
 
 // ---------------------------------------------------------------------------
@@ -483,7 +575,7 @@ function checkDuplicateIds(project: Project): Issue[] {
 
   const collect = (
     entries: readonly { id: string }[],
-    section: "stocks" | "parts",
+    section: "stocks" | "parts" | "assemblies",
   ): void => {
     const seen = new Map<string, number[]>();
     entries.forEach((e, i) => {
@@ -504,6 +596,8 @@ function checkDuplicateIds(project: Project): Issue[] {
 
   collect(project.stocks, "stocks");
   collect(project.parts, "parts");
+  // v0.7: assemblies[].id も変種面のファイル名に入るため一意でなければならない。
+  collect(project.assemblies, "assemblies");
   return issues;
 }
 
@@ -536,6 +630,8 @@ function checkIdSafety(project: Project): Issue[] {
 
   project.stocks.forEach((s, i) => check(s.id, `stocks[${i}].id`, "原材"));
   project.parts.forEach((p, i) => check(p.id, `parts[${i}].id`, "部材"));
+  // v0.7: assembly id は変種面 parts/{assembly}-{形状id}.svg のファイル名に入る。
+  project.assemblies.forEach((a, i) => check(a.id, `assemblies[${i}].id`, "構成"));
   return issues;
 }
 
@@ -911,6 +1007,198 @@ function checkBarRot(
   return issues;
 }
 
+// ---------------------------------------------------------------------------
+// v0.7: assemblies（構成グルーピング）・marks（取り付けシロ）の意味検証（SPECS.md §4c）
+//
+// Issue.path の規約: `assemblies[0].contains` のように**固定キー名＋数値添字だけ**で
+// 構成し、ユーザー制御の文字列（形状 id 等）はメッセージ側に書く。形状 id は「.」を
+// 含みうるため、path のセグメントに混ぜると path → YAML 行の写像が壊れる
+// （既存診断が `parts[3].stock` と書いて id をメッセージに回しているのと同じ規約）。
+// ---------------------------------------------------------------------------
+
+/** v0.7: assemblies[].contains のキーが parts に存在すること。 */
+function checkAssemblyContains(project: Project): Issue[] {
+  const partIds = new Set(project.parts.map((p) => p.id));
+  const issues: Issue[] = [];
+  project.assemblies.forEach((a, i) => {
+    for (const partId of Object.keys(a.contains)) {
+      if (!partIds.has(partId)) {
+        issues.push({
+          path: `assemblies[${i}].contains`,
+          message:
+            `構成 '${a.id}' の contains が存在しない形状 id を参照しています: '${partId}'。`,
+          severity: "error",
+        });
+      }
+    }
+  });
+  return issues;
+}
+
+/**
+ * v0.7: marks[] の参照整合と領域寸法指定の排他。
+ *
+ * - `on` は parts に存在し、かつその構成の contains に含まれること
+ *   （含まれなければマークを適用する部材の実体が構成内に無い）。
+ * - `ref` は parts に存在すること。
+ * - `ref` と `w`/`h` は排他（併記は error。どちらも無ければ領域寸法が決まらず error）。
+ *   併記の側はスキーマの oneOf（層1）でも弾かれるが、権威はこちらに置く
+ *   （parts[].stock の enum と checkStockReferences の関係と同じ）。
+ */
+function checkMarks(project: Project): Issue[] {
+  const partIds = new Set(project.parts.map((p) => p.id));
+  const issues: Issue[] = [];
+  project.assemblies.forEach((a, i) => {
+    a.marks.forEach((m, j) => {
+      const mpath = `assemblies[${i}].marks[${j}]`;
+
+      if (!partIds.has(m.on)) {
+        issues.push({
+          path: `${mpath}.on`,
+          message:
+            `構成 '${a.id}' の mark が存在しない形状 id を参照しています: '${m.on}'。`,
+          severity: "error",
+        });
+        // contains は自前のキーだけを見る（Object.prototype 由来のキー名
+        // （"toString" 等）を形状 id にしたときに検査がすり抜けないように）。
+      } else if (!Object.prototype.hasOwnProperty.call(a.contains, m.on)) {
+        issues.push({
+          path: `${mpath}.on`,
+          message:
+            `mark の対象形状 '${m.on}' が構成 '${a.id}' の contains に含まれていません` +
+            "（マークを適用する部材がこの構成に存在しません）。",
+          severity: "error",
+        });
+      }
+
+      if (m.ref !== null && !partIds.has(m.ref)) {
+        issues.push({
+          path: `${mpath}.ref`,
+          message:
+            `構成 '${a.id}' の mark の ref が存在しない形状 id を参照しています: '${m.ref}'。`,
+          severity: "error",
+        });
+      }
+
+      const hasSize = m.w !== null || m.h !== null;
+      if (m.ref !== null && hasSize) {
+        issues.push({
+          path: `${mpath}.ref`,
+          message:
+            "mark の ref と w/h は排他です（ref は相手形状の断面寸法から領域寸法を" +
+            "導出するため、w/h を併記できません）。",
+          severity: "error",
+        });
+      } else if (m.ref === null && (m.w === null || m.h === null)) {
+        issues.push({
+          path: `${mpath}.w`,
+          message:
+            "mark の領域寸法が決まりません（ref で相手形状の断面寸法から導出するか、" +
+            "w と h の両方を指定してください）。",
+          severity: "error",
+        });
+      }
+    });
+  });
+  return issues;
+}
+
+/**
+ * v0.7: 変種面の出力ファイル名（`parts/{assembly}-{形状id}.svg`）の衝突。
+ *
+ * assembly id・形状 id はいずれも「-」を含みうるため、合成名が別の形状 id や
+ * 別の変種面の名前と一致しうる。上書きで図が静かに消えるのを防ぐため error。
+ */
+function checkMarkVariantCollisions(project: Project): Issue[] {
+  const partIds = new Set(project.parts.map((p) => p.id));
+  const issues: Issue[] = [];
+  const seen = new Map<string, { assemblyId: string; partId: string }>();
+
+  project.assemblies.forEach((a, i) => {
+    // マークを持つ形状だけが変種面として出力される（マーク無しは形状ごとに1面）。
+    for (const partId of new Set(a.marks.map((m) => m.on))) {
+      if (!partIds.has(partId)) {
+        continue; // checkMarks が既に error 報告済み
+      }
+      const stem = markVariantStem(a.id, partId);
+      if (partIds.has(stem)) {
+        issues.push({
+          path: `assemblies[${i}].id`,
+          message:
+            `構成 '${a.id}' × 形状 '${partId}' の変種面の出力名 '${stem}' が` +
+            `部材 id '${stem}' と衝突します（加工指示図が上書きされます）。` +
+            "どちらかの id を変更してください。",
+          severity: "error",
+        });
+        continue;
+      }
+      const prev = seen.get(stem);
+      if (prev !== undefined) {
+        issues.push({
+          path: `assemblies[${i}].id`,
+          message:
+            `構成 '${a.id}' × 形状 '${partId}' の変種面の出力名 '${stem}' が` +
+            `構成 '${prev.assemblyId}' × 形状 '${prev.partId}' の変種面と衝突します` +
+            "（加工指示図が上書きされます）。どちらかの id を変更してください。",
+          severity: "error",
+        });
+        continue;
+      }
+      seen.set(stem, { assemblyId: a.id, partId });
+    }
+  });
+  return issues;
+}
+
+/**
+ * v0.7: parts[].qty の導出（SPECS.md §4c）。
+ *
+ * 1. いずれかの構成の contains に現れる形状 → **全構成の合計が勝つ**。
+ *    qty が併記されていて合計と食い違えば warning（割付は導出後の合計だけを見る）。
+ * 2. どの構成にも現れない形状 → 明記された qty を使う。無ければ必要数を導出できず
+ *    error（qty=0 として黙って木取りから消すと、鋸を入れる部材が静かに失われる）。
+ */
+function checkQtyDerivation(project: Project, raw: Record<string, unknown>): Issue[] {
+  const rawParts = Array.isArray(raw.parts) ? (raw.parts as unknown[]) : [];
+  const issues: Issue[] = [];
+  project.parts.forEach((p, i) => {
+    const rawPart =
+      i < rawParts.length && isPlainObject(rawParts[i])
+        ? (rawParts[i] as Record<string, unknown>)
+        : {};
+    const declared =
+      "qty" in rawPart && rawPart.qty !== null && rawPart.qty !== undefined
+        ? Math.trunc(Number(rawPart.qty))
+        : null;
+    const derived = containedQty(project.assemblies, p.id);
+
+    if (derived === null) {
+      if (declared === null) {
+        issues.push({
+          path: `parts[${i}].qty`,
+          message:
+            `形状 '${p.id}' の必要数を導出できません（どの assembly の contains にも` +
+            "含まれておらず、qty も指定されていません）。qty を明記するか、" +
+            "いずれかの構成の contains に含めてください。",
+          severity: "error",
+        });
+      }
+      return;
+    }
+
+    if (declared !== null && declared !== derived) {
+      issues.push({
+        path: `parts[${i}].qty`,
+        message:
+          `形状 '${p.id}' の qty が assemblies からの導出値と一致しません` +
+          `（宣言値 ${declared} / 導出値 ${derived}）。割付は導出値 ${derived} を使います。`,
+        severity: "warning",
+      });
+    }
+  });
+  return issues;
+}
+
 /** 層2: 意味検証をすべて実行する。 */
 function semanticValidate(project: Project, raw: Record<string, unknown>): Issue[] {
   const stocksById = new Map(project.stocks.map((s) => [s.id, s]));
@@ -926,6 +1214,11 @@ function semanticValidate(project: Project, raw: Record<string, unknown>): Issue
   issues.push(...checkSelectedPlan(project));
   issues.push(...checkRank(project));
   issues.push(...checkBarRot(project, raw, stocksById));
+  // v0.7: assemblies / marks（SPECS.md §4c）
+  issues.push(...checkAssemblyContains(project));
+  issues.push(...checkMarks(project));
+  issues.push(...checkMarkVariantCollisions(project));
+  issues.push(...checkQtyDerivation(project, raw));
   return issues;
 }
 
