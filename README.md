@@ -4,7 +4,7 @@
 
 ## 1. 概要
 
-DIY設計では、寸法を変更するたびに木取り図・加工指示図を描き直す作業が発生する。kidori は、この描き直しコストを解消するためのツールである。
+DIY設計では、寸法を変更するたびに木取り図・加工指示図を描き直す作業が発生する。CutList Optimizer や OpenCutList のような既存ツールは多機能だが、そこまでの多機能さは求めていない。欲しいのは「規格材（1×4・2×4・サブロク合板等）から自分の部材を切り出す」という自分の用途と作業の流れにちょうど合ったツールである。kidori はこの前提から、部材リストをテキストで宣言し、図はそこから派生的に得るという書き方に絞って作られている。
 
 部材・原材・加工フィーチャを `*.kidori.yaml`（正本データ。**1ファイル=1プロジェクト**）に記述して保存すると、拡張が自動でビルドを実行し、木取り図（SVG/PNG）・加工指示図（SVG/PNG）・集計（`summary.json`）を再生成する。結果は拡張内の Webview プレビュー（木取り図タブ／加工指示図タブ）で即時確認できる。
 
@@ -45,9 +45,26 @@ code --install-extension kidori-0.5.0.vsix
 
 VS Code で本リポジトリを開き、`npm install && npm run build` の後に F5（拡張のデバッグ実行）で起動する。
 
+### (c) CLI を PATH に通す（任意）
+
+拡張本体とは別に、CLI（`dist/cli.js`）単体を `kidori` コマンドとして PATH から呼びたい場合は次のいずれかを行う。
+
+```bash
+npm link              # このリポジトリの bin 宣言（kidori）をグローバルにリンクする
+kidori new my-project.kidori.yaml
+```
+
+`npm link` が使えない・使いたくない環境（CI、制限された実行環境など）では、PATH を通さずに直接呼び出せる:
+
+```bash
+node dist/cli.js new my-project.kidori.yaml
+```
+
+以降の説明では `kidori <サブコマンド>` と表記するが、PATH が通っていない環境では常に `node dist/cli.js <サブコマンド>` に読み替えてよい（bin 宣言だけでは実行手段は保証されない）。
+
 ## 4. 使い方
 
-1. 作業フォルダで `kidori new bookshelf.kidori.yaml`（または コマンドパレットから「kidori: New Cutting Plan」）を実行し、雛形ファイルを1枚生成する（`examples/bookshelf/bookshelf.kidori.yaml` も参考にできる）。ファイル名に `.kidori.yaml` サフィックスを付け忘れても、CLI 側は自動的に付与する（`bookshelf` → `bookshelf.kidori.yaml`、`bookshelf.yaml` → `bookshelf.kidori.yaml`）。
+1. 作業フォルダで `kidori new bookshelf.kidori.yaml`（または コマンドパレットから「kidori: New Cutting Plan」）を実行し、雛形ファイルを1枚生成する。ファイル名に `.kidori.yaml` サフィックスを付け忘れても、CLI 側は自動的に付与する（`bookshelf` → `bookshelf.kidori.yaml`、`bookshelf.yaml` → `bookshelf.kidori.yaml`）。動く実例は `examples/` 配下を参照（`examples/bookshelf/bookshelf.kidori.yaml`＝基本形、`examples/uma/uma.kidori.yaml`＝`assemblies`/`marks` を使う実例。下記「`assemblies`・`marks`」参照）。
 2. VS Code で開くと、kidori 拡張が編集中の内容からスキーマを動的に登録する。キー名・enum の補完、型検証、日本語ホバー説明が有効になる。`stocks[].id` を書き換えると、ビルドを待たずに `parts[].stock` の補完候補・検証が追従する（`*.kidori.json` も同じ基底スキーマで検証されるが、`stocks[].id` の動的 enum 合成は現状 YAML 側のみ）。
 3. `stocks:` 配下で補完（Ctrl+Space）すると規格材マスタの候補（「1×4材 6F（1820×89×19）」等）が出て、確定と同時に実値一式と `preset:` キーが挿入される。`length:` / `width:` の値位置では定尺候補（910 / 1820 / 2440 …）が出る。候補は4層カスケード（下記）から供給される。
 4. コマンドパレットから「kidori: プレビューを開く」を実行する。
@@ -65,6 +82,7 @@ kidori ファイルの判定は2系統ある: (i) 命名規約 `*.kidori.yaml` /
 | kidori: ビルド（木取り図・加工指示図を再生成） | 手動ビルド |
 | kidori: プレビューを開く | Webview プレビュー（木取り図／加工指示図） |
 | kidori: 案を採用する | QuickPick で案を選択して selectedPlan を書き込み |
+| kidori: 構成を挿入（parts＋assembly の雛形） | カーソル位置に `parts`＋`assemblies`（`contains`／`marks`）の雛形をスニペット挿入する（下記「assemblies・marks」参照） |
 
 ### 設定
 
@@ -93,7 +111,7 @@ kidori ファイルの判定は2系統ある: (i) 命名規約 `*.kidori.yaml` /
 
 ```yaml
 # yaml-language-server: $schema=./kidori.schema.json
-meta: { project: 書棚, units: mm, schemaVersion: "0.3" }
+meta: { project: 書棚, units: mm, schemaVersion: "0.4" }
 
 settings:
   kerf: 3                    # 鋸刃厚（mm）
@@ -124,12 +142,43 @@ parts:
 
 主なフィールド:
 
-- `meta.schemaVersion`: 現行は `"0.3"`。不一致は**警告のみでビルドは継続する**（旧バージョンで書かれたファイルの救済経路）。
+- `meta.schemaVersion`: 現行は `"0.4"`。不一致は**警告のみでビルドは継続する**（旧バージョンで書かれたファイルの救済経路）。
 - `stocksFile`: 外部 stocks ファイルへの相対パス参照。**単段のみ**（参照先がさらに `stocksFile` を持つとエラー）。インラインの `stocks` と `id` が衝突した場合はインラインが勝つ。
 - `stocks[].preset`: 規格材マスタの来歴キー（任意）。ビルドは一切解決しない。実値フィールドは `preset` の有無に関わらず全て必須。
-- `settings.rank` / `settings.exact` / `settings.selectedPlan`: v0.4 で追加された推奨案・厳密探索・案採用の設定（下記§「採用案の無効化」参照）。
+- `settings.rank` / `settings.exact` / `settings.selectedPlan`: 推奨案・厳密探索・案採用の設定（下記§「採用案の無効化」参照）。
+- `parts[].qty`: 必要個数。下記「`assemblies`・`marks`」の `contains` に形状 id が現れる場合は省略できる（全 assembly の合計から導出される）。併記して食い違う場合は警告診断になる。
 
 注意: 2D（sheet）のカット回数は「概算」であり（共線カットの1パス統合を行わない）、図・プレビューでも「カット回数（概算）」と表記される。2D 厳密探索の最適性は、面積下界と一致した場合のみ「証明あり」として `summary.json` に記録される（`exact.proven`）。
+
+### `assemblies`・`marks`（構成グルーピング・取り付けシロ）
+
+部材リストには「形状の同一性」（割付が見る寸法・加工）と「構成への所属」（どの部材が何個でひと組か）と「取り付けシロ」（相手部材がどこに当たるか）という3つの独立した情報が同居しがちである。これらを `parts` の分割やコメントで表現すると、同じ形状を複数回定義する羽目になったり、グルーピングの軸が衝突したりする。kidori はこれを分離する: **形状は `parts` のまま、構成への所属と取り付けシロは任意区画 `assemblies` に書く**。
+
+例（`examples/uma/uma.kidori.yaml`。作業用のウマ2脚を、足の組み方だけが違う2構成として表現している）:
+
+```yaml
+parts:
+  - { id: leg,       label: 足,     stock: 2x4-6f, length: 800 }
+  - { id: beam-top,  label: 天板,   stock: 2x4-6f, length: 850 }
+  - { id: beam-foot, label: 接地面, stock: 2x4-6f, length: 900 }
+
+assemblies:
+  - id: uma-1
+    label: ウマ1号機（足が内側）
+    contains: { leg: 2, beam-top: 1, beam-foot: 1 }
+    marks:
+      - { on: beam-top, face: front, ref: leg, x: 50, note: 足当たり面 }
+  - id: uma-2
+    label: ウマ2号機（互い違いに噛み合う側）
+    contains: { leg: 2, beam-top: 1, beam-foot: 1 }
+    marks:
+      - { on: beam-top, face: front, ref: leg, x: 120, note: 足当たり面 }
+```
+
+- **`assemblies[].contains`**: 形状 id → 個数のマップ。「このひと組（assembly）に、どの形状が何個入るか」の宣言。`leg`/`beam-top`/`beam-foot` は `parts` に `qty` を書いていない（省略時は全 assembly の `contains` 合計から導出される。上の例なら `leg` は 2×2=4 個）。割付は導出後の合計数だけを見るため、`beam-top` を「天板1」「天板2」のように形状として複製する必要はない。
+- **`assemblies[].marks`**: 切削を伴わない当たり面・位置のマーキング（取り付けシロ）。`on`（対象形状 id）・`face`・`x`/`y`（領域左下角、省略時0）を指定し、領域の大きさは `w`/`h` を直接書くか、`ref: <形状id>` で相手部材の断面寸法（厚み×実効幅）から自動導出させる。上の例の `ref: leg` は 2×4 材（厚み38×幅89）の断面を指し、`leg` の寸法を変えれば追従する。marks は**加工指示図にのみ**破線／ハッチングで描画され（木取り図には出ない）、割付・歩留まり・カット回数には一切影響しない。
+- **assembly ごとの変種面**: 同じ形状でも assembly によってマーク位置が異なる場合（上の例の `beam-top` は `uma-1` と `uma-2` でマーク位置 `x` が違う）、加工指示図は assembly 単位の変種面として出力される（`parts/uma-1-beam-top.svg` / `parts/uma-2-beam-top.svg`）。マークを持たない形状（上の例の `leg`・`beam-foot`）は従来どおり形状ごとに1面（`parts/leg.svg` 等）。
+- **一括挿入**: コマンドパレットの「kidori: 構成を挿入（parts＋assembly の雛形）」で、上記と同じ形（`leg`/`beam-top`/`beam-foot` 相当）の `parts`＋`assembly` の雛形をタブストップ付きスニペットとして挿入できる。展開後はただの YAML で、マクロ的な参照や独自構文は残らない。
 
 ### 採用案の無効化（設計変更後の再割付）
 
@@ -154,15 +203,20 @@ kidori init   [ディレクトリ] [--with-stocks]           # ディレクト�
 kidori build  [<name>.kidori.yaml] [--out DIR] [--no-png] [--scale N]
 kidori watch  [<name>.kidori.yaml] [--out DIR] [--no-png] [--scale N]   # 変更監視して自動再ビルド
 kidori select <A|B|C|X|null> [<name>.kidori.yaml]
+kidori check  <name>.kidori.yaml                        # 構造化診断を JSON で出力（ビルドなし）
+kidori schema <name>.kidori.yaml                        # このファイル用の合成済みスキーマを stdout へ出力
 ```
 
-`node dist/cli.js <サブコマンド>...` で実行できる（`npm install -g` 相当で `kidori` コマンドとして使う場合は `npm link`）。
+`node dist/cli.js <サブコマンド>...` で実行できる（PATH を通す方法は §3 (c) を参照）。
 
-- **対象ファイルを省略した場合**、`build`/`watch`/`select` はカレントディレクトリの `*.kidori.{yaml,yml,json}` を探索する。見つかったのが1件ならそれを使い、0件または複数件ならエラー（対象ファイルの明示を促す）。
+- **対象ファイルを省略した場合**、`build`/`watch`/`select` はカレントディレクトリの `*.kidori.{yaml,yml,json}` を探索する。見つかったのが1件ならそれを使い、0件または複数件ならエラー（対象ファイルの明示を促す）。`check`/`schema` は対象ファイルの省略を受け付けず、常に明示が必要。
 - `kidori new`: `--preset <キー>` を反復指定すると、既定のサンプル部材ではなく指定した規格材マスタのキー（例: `spf/1x4/6f`）を実体化して書き出す。未知のキーを渡すとエラーで利用可能なキー一覧が表示される。
 - `kidori init`: `--with-stocks` を付けると共有 `stocks.yaml` の雛形も生成する（既定では生成しない）。生成物はすべて**冪等**（既存ファイルは書き換えず、1件ずつ結果を報告する。`.gitignore` のみ不足パターンの追記を行う）。
+- `kidori check`: **拡張ホスト API に届かないコーディングエージェント（Claude Code 等）向けの検証ループ**。ビルドせずに検証だけを実行し、`{ file, errorCount, warningCount, diagnostics: [{ path, line, severity, message }] }` という構造化 JSON を stdout に出す。検証内容は拡張内の検証（補完・ホバーと同じ意味検証層）と同一実装。`stocksFile` の参照解決やスキーマ検証、`groove.depth` の板厚超過・`groove.pos` の範囲外・`end: through` への `from`/`to` 併記といった意味検証も対象。
+  - 終了コードは `check` 専用の規約を持つ（他コマンドの一般規約とは独立）: **0**=error 診断なし（warning はあってもよく、JSON では報告される）、**1**=error 診断あり（YAML/JSON の構文エラーも診断1件として扱う）、**2**=引数エラー・ファイルが読めない（IO エラー）。CI からの利用も想定している。
+- `kidori schema`: 当該ファイル用に、インラインの `stocks[].id` と `stocksFile` 参照先の id を動的 enum として合成した完全なスキーマをその場で stdout に出す。「静的ファイルとして読む」のではなく「問い合わせる」形にすることで、スナップショットの陳腐化を避ける。`kidori build` が書き出す `<ファイル名>.out/schema.json`（§7）と同じ合成ロジックを共有するため内容は一致する。
 - CLI は非対話を貫く（規格材の選択も `--preset` の反復指定で表現し、対話 UI は拡張層の Quick Pick に任せる）。
-- 終了コード: 0=成功、1=検証エラー・実行時エラー、2=引数エラー。
+- 終了コード（`check` を除く）: 0=成功、1=検証エラー・実行時エラー、2=引数エラー。
 
 ## 7. 出力
 
@@ -171,15 +225,23 @@ bookshelf.out/
 ├── plan-A.svg / plan-A.png   # 木取り図（案ごと。ヘッダに ★ 推奨案・厳密解一致を表示）
 ├── plan-B.* / plan-C.* / plan-X.*
 ├── parts/
-│   └── <部材ID>.svg / .png    # 加工指示図（チェーン寸法・溝/穴の注記）
+│   ├── <部材ID>.svg / .png                 # 加工指示図（チェーン寸法・溝/穴の注記）
+│   └── <assembly名>-<部材ID>.svg / .png    # assembly ごとの変種面（marks で位置が異なる場合のみ。§5「assemblies・marks」）
 ├── summary.json               # 必要本数・概算費用・歩留まり・カット回数・
 │                              # rank / recommendedPlan / rankedPlans / exact
 │                              # ／adopted・selectedPlanStale（採用案の無効化。§5）
 │                              # ＋ sourceFile / sourceSha256（由来した正本の識別）
+│                              # ／assemblies（assembly 単位の部材内訳。assemblies 使用時のみ）
+├── schema.json                 # このファイル用の合成済みスキーマ（`kidori schema` の出力と同一内容。§6）
 └── BUILD-FAILED.txt           # 直近ビルドが失敗したときだけ存在する失敗マーカー
 ```
 
-出力先は正本ファイル名から導かれる（`bookshelf.kidori.yaml` → `bookshelf.out/`、拡張子のみのファイルなら `foo.yaml` → `foo.out/`）。`project.schema.json` のような**スキーマファイルのビルドごとの再生成は行わない**（v0.6 で廃止）。VS Code 以外の環境で補完・検証に使うスキーマは `kidori init` が明示的に書き出す `kidori.schema.json` のみで、ビルドの副作用としては生成されない。
+出力先は正本ファイル名から導かれる（`bookshelf.kidori.yaml` → `bookshelf.out/`、拡張子のみのファイルなら `foo.yaml` → `foo.out/`）。
+
+**スキーマ書き出しには区別すべき2つの経路がある**（紛らわしいため明記する）:
+
+- **正本ディレクトリへの再生成は v0.6 で廃止**されたままである（§4b）。編集中ファイルの隣に `<stem>.schema.json` を都度書き出す経路はない。古い合成済みスキーマが正本のそばに残って誤情報源になる事故を防ぐための廃止であり、VS Code 以外の環境で補完・検証に使う基底スキーマは `kidori init` が明示的に書き出す `kidori.schema.json`（動的 enum なし）のみで、これはビルドの副作用では生成されない。
+- 一方、**`<ファイル名>.out/schema.json` への書き出しは v0.7 で追加**された（動的 enum 込みの合成済みスキーマ）。`<ファイル名>.out/` は毎ビルド再生成され `.gitignore` 対象の派生物ディレクトリなので、上記の廃止理由（残骸化）には当たらない。`kidori schema <ファイル>` の stdout と同一内容になる。
 
 ### `<ファイル名>.out/` が現行の正本由来かを確認する
 
@@ -204,4 +266,4 @@ npm run package     # .vsix を生成
 
 ## 9. ライセンス・参考
 
-詳細仕様は SPECS.md（v0.6）を参照。アルゴリズムの参照実装として使用した旧 Python CLI 版は git 履歴（コミット `39116a3` 以前）にある。
+詳細仕様は SPECS.md（v0.7）を参照。アルゴリズムの参照実装として使用した旧 Python CLI 版は git 履歴（コミット `39116a3` 以前）にある。

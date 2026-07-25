@@ -1,0 +1,54 @@
+# VS Code では kidori 拡張がファイルごとにスキーマを供給するため、モードラインは不要。
+# VS Code 以外のエディタ・エージェントで使う場合は `kidori init` で kidori.schema.json を
+# 生成し、次の行の先頭の "# " を外してモードラインを有効化する:
+# # yaml-language-server: $schema=./kidori.schema.json
+#
+# ウマ（作業台）2脚（設計メモ）
+# ------------------------------------------------------------
+# assemblies / marks（SPECS.md §4c）の実例。SPECS.md §4c 掲載のウマそのもの。
+# 「足」「天板」「接地面」という3つの形状だけを parts に書き、2脚のウマ
+# （足が内側に来る組み方と、互い違いに噛み合う組み方）は assemblies で表現する:
+#   - 部材必要数（leg=4, beam-top=2, beam-foot=2）は parts に書かない。
+#     各 assembly の contains（足2・天板1・接地面1）の合計から自動的に導出される。
+#   - 足当たり面（取り付けシロ）の位置は2脚で異なる（uma-1 は天板中央寄り、
+#     uma-2 は互い違いに噛み合わせるため位置をずらす）。同じ形状 beam-top でも
+#     assembly ごとにマーク位置が違うため、加工指示図は assembly ごとの変種面
+#     （parts/uma-1-beam-top.svg / parts/uma-2-beam-top.svg）として出力される。
+#   - marks は木取り図には描かれず、割付（歩留まり・必要本数）にも影響しない。
+#     加工指示図にのみハッチングと「取り付け位置（切削なし）」の注記で描かれる。
+meta: { project: ウマ, units: mm, schemaVersion: "0.4" }
+
+settings:
+  kerf: 3            # 鋸刃厚（mm、仮値）
+  edgeTrim: 5        # 木口の捨て代（mm）
+  candidates: 3
+  rank: [cost, waste, cuts]  # 推奨案の評価優先順（概算費用 → 歩留まり → カット回数）
+  exact: auto        # 部材数が少ないときは厳密探索で最適構成も確認する
+  selectedPlan: null # 案を確定したらプレビューの「この案を採用」または `kidori select A`
+
+stocks:
+  # preset は規格材マスタの来歴キー（任意のメタデータ）。ビルドは preset を解決しないので、
+  # 手持ちの材に合わせて実値を書き換えてよい（assets/stock-presets.json が実在キーの一覧）。
+  - { id: 2x4-6f, preset: spf/2x4/6f, label: "2×4材 6F", kind: bar, length: 1820, width: 89, thickness: 38, price: 598 }
+
+parts:
+  # 3形状のみ。個数は parts には書かず、下の assemblies[].contains から導出させる
+  # （qty を併記すると、後で contains だけ直したときに食い違い警告が出る）。
+  - { id: leg,       label: 足,     stock: 2x4-6f, length: 800 }
+  - { id: beam-top,  label: 天板,   stock: 2x4-6f, length: 850 }
+  - { id: beam-foot, label: 接地面, stock: 2x4-6f, length: 900 }
+
+assemblies:
+  - id: uma-1
+    label: ウマ1号機（足が内側）
+    contains: { leg: 2, beam-top: 1, beam-foot: 1 }
+    marks:
+      # ref: leg で足（2×4 材＝38×89）の断面寸法から領域を自動導出する。
+      # 参照先（leg）の寸法を変えても、この領域は追従する。
+      - { on: beam-top, face: front, ref: leg, x: 50, note: 足当たり面 }
+  - id: uma-2
+    label: ウマ2号機（互い違いに噛み合う側）
+    contains: { leg: 2, beam-top: 1, beam-foot: 1 }
+    marks:
+      # 同じ beam-top でも、噛み合わせのために足当たり面の位置が異なる。
+      - { on: beam-top, face: front, ref: leg, x: 120, note: 足当たり面 }
