@@ -11,6 +11,18 @@ import * as vscode from "vscode";
 import type { Summary } from "../core/metrics";
 
 export interface PreviewData {
+  /**
+   * この表示が由来する正本ファイルの絶対パス（SPECS.md §3「1ファイル=1プロジェクト」）。
+   *
+   * パネルは1枚のまま「最後にビルド／指定されたプロジェクト」を表示するため、
+   * 表示内容と操作対象の対応づけはこの値で行う。プレビュー上の「この案を採用」は
+   * **表示時にバインドされたこのパス**に対して適用しなければならない
+   * （グローバルな「最後にビルドしたプロジェクト」を使うと、別プロジェクトを
+   * 保存した直後のクリックが表示中でないファイルを書き換える）。
+   */
+  projectPath: string;
+  /** パネルタイトルに出すプロジェクト名（通常は正本の stem）。 */
+  label: string;
   summary: Summary;
   plans: { id: string; svg: string }[];
   parts: { id: string; label: string; svg: string }[];
@@ -21,6 +33,12 @@ export type PlanAction =
   | { command: "clearSelection" }
   | { command: "rebuild" };
 
+/** Webview から返ってくるメッセージ（表示時にバインドされた正本パスを伴う）。 */
+type PlanMessage = PlanAction & { projectPath?: string };
+
+/** パネルタイトルの接頭辞（プロジェクト名を後置する）。 */
+const PANEL_TITLE = "kidori プレビュー";
+
 export class KidoriPreview {
   private panel: vscode.WebviewPanel | null = null;
   private lastData: PreviewData | null = null;
@@ -29,10 +47,21 @@ export class KidoriPreview {
   private stale = false;
   private lastError: string | null = null;
 
-  constructor(private readonly onAction: (action: PlanAction) => void) {}
+  /**
+   * @param onAction 第2引数は**その表示がバインドしている正本パス**
+   *   （未ビルドで不明なら null）。呼び出し側はこの値を対象として扱うこと。
+   */
+  constructor(
+    private readonly onAction: (action: PlanAction, projectPath: string | null) => void,
+  ) {}
 
   get visible(): boolean {
     return this.panel !== null;
+  }
+
+  /** 現在の表示がバインドしている正本パス（未ビルドなら null）。 */
+  get boundProjectPath(): string | null {
+    return this.lastData?.projectPath ?? null;
   }
 
   show(): void {
@@ -42,15 +71,15 @@ export class KidoriPreview {
     }
     this.panel = vscode.window.createWebviewPanel(
       "kidoriPreview",
-      "kidori プレビュー",
+      this.lastData ? `${PANEL_TITLE} — ${this.lastData.label}` : PANEL_TITLE,
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
       { enableScripts: true, retainContextWhenHidden: true },
     );
     this.panel.onDidDispose(() => {
       this.panel = null;
     });
-    this.panel.webview.onDidReceiveMessage((msg: PlanAction) => {
-      this.onAction(msg);
+    this.panel.webview.onDidReceiveMessage((msg: PlanMessage) => {
+      this.handleMessage(msg);
     });
     this.panel.webview.html = this.html();
     // パネル未表示中に届いた最新状態（データ・stale）を再表示時に反映する。
@@ -62,11 +91,23 @@ export class KidoriPreview {
     }
   }
 
+  /**
+   * Webview からのメッセージを処理する（onDidReceiveMessage の本体）。
+   *
+   * 対象プロジェクトは **Webview が描画に使ったデータに含まれるパス**を最優先で
+   * 使う（描画とクリックの間に別プロジェクトのビルドが挟まっても、押した画面の
+   * ものが対象になる）。古い Webview 等でパスが無い場合のみ現在の束縛に落とす。
+   */
+  handleMessage(msg: PlanMessage): void {
+    this.onAction(msg, msg.projectPath ?? this.boundProjectPath);
+  }
+
   update(data: PreviewData): void {
     this.lastData = data;
     this.stale = false;
     this.lastError = null;
     if (this.panel) {
+      this.panel.title = `${PANEL_TITLE} — ${data.label}`;
       void this.panel.webview.postMessage({ command: "update", data });
     }
   }
@@ -131,7 +172,7 @@ export class KidoriPreview {
     <button class="tab" id="tab-parts">加工指示図</button>
   </div>
   <div id="error" class="error" hidden></div>
-  <div id="view-plans"><div class="empty">ビルド待ち（project.yaml を保存すると更新されます）</div></div>
+  <div id="view-plans"><div class="empty">ビルド待ち（kidori ファイル（*.kidori.yaml など）を保存すると更新されます）</div></div>
   <div id="view-parts" hidden></div>
 <script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
@@ -139,6 +180,13 @@ export class KidoriPreview {
   let activePlanId = null;
 
   const el = (id) => document.getElementById(id);
+
+  // 操作は必ず「いま描画に使っているデータの正本パス」に紐づけて送る
+  // （拡張側がグローバルな最終ビルド対象で解決すると別プロジェクトを書き換える）。
+  function post(message) {
+    message.projectPath = data ? data.projectPath : null;
+    vscode.postMessage(message);
+  }
 
   el("tab-plans").addEventListener("click", () => switchTab("plans"));
   el("tab-parts").addEventListener("click", () => switchTab("parts"));
@@ -178,7 +226,11 @@ export class KidoriPreview {
         label = "案 " + plan.id;
       }
       if (ps && ps.recommended) label += " ★";
-      if (summary.selectedPlan === plan.id) label += "【採用】";
+      // 採用案が採用後の設計変更で無効化されている間は「採用（無効）」と出す
+      // （SPECS.md §5。この状態では selectedPlan を無視して全案を再生成している）。
+      if (summary.selectedPlan === plan.id) {
+        label += summary.selectedPlanStale === true ? "【採用（無効）】" : "【採用】";
+      }
       chip.textContent = label;
       chip.addEventListener("click", () => { activePlanId = plan.id; renderPlans(); });
       chips.appendChild(chip);
@@ -201,7 +253,11 @@ export class KidoriPreview {
           ? '<span class="badge">厳密解（最適性証明済み）</span>'
           : '<span class="badge">最適性未証明</span>';
       }
-      if (summary.selectedPlan === ps.id) badges += '<span class="badge">採用済み</span>';
+      if (summary.selectedPlan === ps.id) {
+        badges += summary.selectedPlanStale === true
+          ? '<span class="badge">採用（無効）— 設計変更のため再選択してください</span>'
+          : '<span class="badge">採用済み</span>';
+      }
       const costNote = ps.totals.costComplete === false
         ? "（一部価格なし・費用比較対象外）" : "";
       m.innerHTML =
@@ -225,18 +281,26 @@ export class KidoriPreview {
 
     const actions = document.createElement("div");
     actions.className = "actions";
-    if (summary.selectedPlan === activePlanId) {
+    const isSelected = summary.selectedPlan === activePlanId;
+    const staleSelection = summary.selectedPlanStale === true;
+    if (isSelected) {
+      // 無効化された採用案を選び直す経路は「解除 → 採用」の2手になる。
+      // 同じ案 ID を書き直しても正本のテキストが変わらず（＝保存も再ビルドも
+      // 起きず）、採用記録のフィンガープリントが更新されないため、
+      // ここに「再採用」ボタンは置かない。
       const btn = document.createElement("button");
       btn.className = "btn secondary";
-      btn.textContent = "採用を解除（全案を再生成）";
-      btn.addEventListener("click", () => vscode.postMessage({ command: "clearSelection" }));
+      btn.textContent = staleSelection
+        ? "採用を解除（選び直す）"
+        : "採用を解除（全案を再生成）";
+      btn.addEventListener("click", () => post({ command: "clearSelection" }));
       actions.appendChild(btn);
     } else {
       const btn = document.createElement("button");
       btn.className = "btn";
       btn.textContent = "この案を採用";
       btn.addEventListener("click", () =>
-        vscode.postMessage({ command: "selectPlan", planId: activePlanId }));
+        post({ command: "selectPlan", planId: activePlanId }));
       actions.appendChild(btn);
     }
     view.appendChild(actions);

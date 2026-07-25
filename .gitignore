@@ -2,6 +2,14 @@ node_modules/
 dist/
 *.vsix
 *.tsbuildinfo
-out/
-project.schema.json
+# kidori の出力先（SPECS.md §3: <正本の stem>.out/ に隣置き）
+*.out/
 .claude/settings.local.json
+
+# 以下は「無視しない」ことが意味を持つファイル（誤って追加しないこと）:
+#   kidori.schema.json        … kidori init の生成物。正本セットとして
+#                               コミットする（VS Code 外・エージェント向けの
+#                               形式仕様。SPECS.md §3a）
+#   assets/kidori.schema.json … 拡張同梱の基底スキーマ。esbuild が
+#                               src/core/schema.ts から生成するが、vsix 同梱と
+#                               drift 検知テストのためコミット対象にする

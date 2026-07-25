@@ -1,19 +1,19 @@
 {
-  "$comment": "kidori 同梱の規格材プリセット。stocks 補完・寸法値補完の元データ。ワークスペース直下の kidori.presets.json で追記・上書きできる（同名 name は上書き）。プリセット内容は SPECS.md §8 の未確定事項（資材価格ログとの表記整合）を解消するまでの暫定値。",
-  "stocks": [
-    { "name": "1×4材 6F", "id": "1x4-6f", "kind": "bar", "length": 1820, "width": 89, "thickness": 19 },
-    { "name": "1×4材 8F", "id": "1x4-8f", "kind": "bar", "length": 2438, "width": 89, "thickness": 19 },
-    { "name": "2×4材 6F", "id": "2x4-6f", "kind": "bar", "length": 1820, "width": 89, "thickness": 38 },
-    { "name": "2×4材 8F", "id": "2x4-8f", "kind": "bar", "length": 2438, "width": 89, "thickness": 38 },
-    { "name": "1×6材 6F", "id": "1x6-6f", "kind": "bar", "length": 1820, "width": 140, "thickness": 19 },
-    { "name": "2×6材 6F", "id": "2x6-6f", "kind": "bar", "length": 1820, "width": 140, "thickness": 38 },
-    { "name": "杉KD材 30×40", "id": "sugi-30x40", "kind": "bar", "length": 1820, "width": 40, "thickness": 30 },
-    { "name": "サブロク合板 12mm", "id": "gouhan-12", "kind": "sheet", "length": 1820, "width": 910, "thickness": 12 },
-    { "name": "サブロク合板 9mm", "id": "gouhan-9", "kind": "sheet", "length": 1820, "width": 910, "thickness": 9 },
-    { "name": "サブロク合板 5.5mm", "id": "gouhan-5.5", "kind": "sheet", "length": 1820, "width": 910, "thickness": 5.5 },
-    { "name": "パイン集成材 18mm", "id": "pine-18", "kind": "sheet", "length": 1820, "width": 910, "thickness": 18 },
-    { "name": "ラワンランバーコア 18mm", "id": "lumber-18", "kind": "sheet", "length": 1820, "width": 910, "thickness": 18 },
-    { "name": "シナベニヤ 4mm", "id": "shina-4", "kind": "sheet", "length": 1820, "width": 910, "thickness": 4 }
+  "$comment": "kidori 同梱の規格材マスタ（4層カスケードのビルトイン層。SPECS.md §4b）。preset がマスタキー（素材/断面/定尺）、id は補完確定時に挿入される正本 id の既定値。price は載せない（実勢価格を知らない既定値が費用計算へ混入するのを防ぐ）。上書き・追記はユーザー層 $XDG_CONFIG_HOME/kidori/stocks.yaml またはディレクトリ層 stocks.yaml で行う。プリセット内容は SPECS.md §8 の未確定事項（資材価格ログとの表記整合）を解消するまでの暫定値。",
+  "presets": [
+    { "preset": "spf/1x4/6f", "id": "1x4-6f", "label": "1×4材 6F", "kind": "bar", "length": 1820, "width": 89, "thickness": 19 },
+    { "preset": "spf/1x4/8f", "id": "1x4-8f", "label": "1×4材 8F", "kind": "bar", "length": 2438, "width": 89, "thickness": 19 },
+    { "preset": "spf/2x4/6f", "id": "2x4-6f", "label": "2×4材 6F", "kind": "bar", "length": 1820, "width": 89, "thickness": 38 },
+    { "preset": "spf/2x4/8f", "id": "2x4-8f", "label": "2×4材 8F", "kind": "bar", "length": 2438, "width": 89, "thickness": 38 },
+    { "preset": "spf/1x6/6f", "id": "1x6-6f", "label": "1×6材 6F", "kind": "bar", "length": 1820, "width": 140, "thickness": 19 },
+    { "preset": "spf/2x6/6f", "id": "2x6-6f", "label": "2×6材 6F", "kind": "bar", "length": 1820, "width": 140, "thickness": 38 },
+    { "preset": "sugi/30x40/6f", "id": "sugi-30x40", "label": "杉KD材 30×40", "kind": "bar", "length": 1820, "width": 40, "thickness": 30 },
+    { "preset": "gouhan/12mm/sabroku", "id": "gouhan-12", "label": "サブロク合板 12mm", "kind": "sheet", "length": 1820, "width": 910, "thickness": 12 },
+    { "preset": "gouhan/9mm/sabroku", "id": "gouhan-9", "label": "サブロク合板 9mm", "kind": "sheet", "length": 1820, "width": 910, "thickness": 9 },
+    { "preset": "gouhan/5.5mm/sabroku", "id": "gouhan-5.5", "label": "サブロク合板 5.5mm", "kind": "sheet", "length": 1820, "width": 910, "thickness": 5.5 },
+    { "preset": "pine/18mm/sabroku", "id": "pine-18", "label": "パイン集成材 18mm", "kind": "sheet", "length": 1820, "width": 910, "thickness": 18 },
+    { "preset": "lumber/18mm/sabroku", "id": "lumber-18", "label": "ラワンランバーコア 18mm", "kind": "sheet", "length": 1820, "width": 910, "thickness": 18 },
+    { "preset": "shina/4mm/sabroku", "id": "shina-4", "label": "シナベニヤ 4mm", "kind": "sheet", "length": 1820, "width": 910, "thickness": 4 }
   ],
   "lengths": [300, 450, 600, 910, 1220, 1820, 1825, 2438, 2440, 3030, 3050],
   "widths": [40, 89, 140, 184, 235, 300, 450, 600, 910, 1220]

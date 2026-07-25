@@ -1,7 +1,7 @@
 {
   "name": "kidori",
   "displayName": "kidori",
-  "description": "規格材の木取り図・加工指示図に特化した VS Code 拡張。正本 project.yaml から SVG/PNG を自動生成する。",
+  "description": "規格材の木取り図・加工指示図に特化した VS Code 拡張。正本 *.kidori.yaml から SVG/PNG を自動生成する。",
   "version": "0.4.1",
   "publisher": "tnishimura",
   "license": "MIT",
@@ -20,13 +20,22 @@
     "redhat.vscode-yaml"
   ],
   "activationEvents": [
-    "workspaceContains:**/project.yaml",
-    "workspaceContains:**/project.json",
+    "workspaceContains:**/*.kidori.yaml",
+    "workspaceContains:**/*.kidori.yml",
+    "workspaceContains:**/*.kidori.json",
     "onLanguage:yaml",
     "onLanguage:json"
   ],
   "contributes": {
     "commands": [
+      {
+        "command": "kidori.new",
+        "title": "kidori: New Cutting Plan（木取りファイルの雛形を生成）"
+      },
+      {
+        "command": "kidori.init",
+        "title": "kidori: ディレクトリを初期化（AGENTS.md・スキーマ等を生成）"
+      },
       {
         "command": "kidori.build",
         "title": "kidori: ビルド（木取り図・加工指示図を再生成）"
@@ -40,13 +49,19 @@
         "title": "kidori: 案を採用する"
       }
     ],
+    "jsonValidation": [
+      {
+        "fileMatch": "*.kidori.json",
+        "url": "./assets/kidori.schema.json"
+      }
+    ],
     "configuration": {
       "title": "kidori",
       "properties": {
         "kidori.buildOnSave": {
           "type": "boolean",
           "default": true,
-          "description": "project.yaml / project.json の保存時に自動でビルドする。"
+          "description": "kidori ファイル（*.kidori.yaml など、または meta.schemaVersion を持つ *.yaml / *.json）の保存時に自動でビルドする。"
         },
         "kidori.png.enabled": {
           "type": "boolean",
