@@ -457,4 +457,13 @@ describe("DESCRIPTIONS", () => {
     expect(DESCRIPTIONS["settings.selectedPlan"]).toContain("X");
     expect(DESCRIPTIONS["parts.id"]).toContain("出力ファイル名");
   });
+
+  it("groove.pos は SPECS.md の座標規約（基準端＝ローカル原点側、across=X／along=Y）を明記する", () => {
+    const desc = DESCRIPTIONS["groove.pos"];
+    expect(desc).toContain("部材ローカル原点側");
+    expect(desc).toContain("左端からの X 座標");
+    expect(desc).toContain("下端からの Y 座標");
+    // 既存の情報（寸法線抽出での中心基準扱い）を落としていないこと。
+    expect(desc).toContain("中心基準");
+  });
 });

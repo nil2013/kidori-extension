@@ -91,7 +91,9 @@ export const DESCRIPTIONS: Record<string, string> = {
   "features.type": "フィーチャ種別。groove（溝）または hole（丸穴）。",
   "groove.face": "加工面。front は実線＋薄塗り、back は破線（隠れ線規約）で描画される。",
   "groove.dir": "溝の走行方向。across（幅方向）または along（長さ方向）。",
-  "groove.pos": "基準端から溝中心までの距離（mm）。寸法線抽出でも中心基準として扱う。",
+  "groove.pos":
+    "基準端（部材ローカル原点側の端）から溝中心までの距離（mm）。" +
+    "across は左端からの X 座標、along は下端からの Y 座標。寸法線抽出でも中心基準として扱う。",
   "groove.width": "溝幅（mm）。",
   "groove.depth": "溝深さ（mm）。stock.thickness 以下でなければならない（意味検証層）。",
   "groove.end": "through（通し）または stopped（止め、止めの場合 from/to を追加）。",
