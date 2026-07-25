@@ -25,6 +25,11 @@ function writeProject(yamlText: string): string {
   return p;
 }
 
+/** 既定の出力先（正本 project.yaml → project.out/。SPECS §3）。 */
+function defaultOut(): string {
+  return path.join(dir, "project.out");
+}
+
 function readSummary(outDir: string): Summary {
   return JSON.parse(
     fs.readFileSync(path.join(outDir, "summary.json"), "utf-8"),
@@ -36,7 +41,7 @@ const silent = (): void => {};
 describe("build（統合）", () => {
   it("A/B/C を生成し、推奨案と厳密解一致を summary に記録する", () => {
     const p = writeProject(`
-meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+meta: { project: テスト, units: mm, schemaVersion: "0.3" }
 settings: { kerf: 3, edgeTrim: 5, candidates: 3, selectedPlan: null }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19, price: 382 }
@@ -65,7 +70,7 @@ parts:
   it("厳密解がヒューリスティックより少ない本数のとき案 X を候補に加える", () => {
     // FFD/BFD/grouped はいずれも3本、最適は2本になる古典的な組合せ。
     const p = writeProject(`
-meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+meta: { project: テスト, units: mm, schemaVersion: "0.3" }
 settings: { kerf: 0, edgeTrim: 0, candidates: 3, selectedPlan: null }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1000, width: 89, thickness: 19 }
@@ -89,7 +94,7 @@ parts:
 
   it("selectedPlan 設定時は採用案のみ生成し、厳密探索と推奨★を省略する", () => {
     const p = writeProject(`
-meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+meta: { project: テスト, units: mm, schemaVersion: "0.3" }
 settings: { kerf: 3, edgeTrim: 5, candidates: 3, selectedPlan: B }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19 }
@@ -110,7 +115,7 @@ parts:
 
   it("selectedPlan: X で厳密解のみ再生成できる", () => {
     const p = writeProject(`
-meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+meta: { project: テスト, units: mm, schemaVersion: "0.3" }
 settings: { kerf: 0, edgeTrim: 0, candidates: 3, exact: on, selectedPlan: X }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1000, width: 89, thickness: 19 }
@@ -131,7 +136,7 @@ parts:
 
   it("検証エラーで ProjectError を投げ、出力を生成しない", () => {
     const p = writeProject(`
-meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+meta: { project: テスト, units: mm, schemaVersion: "0.3" }
 settings: { kerf: 3, edgeTrim: 5 }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19 }
@@ -139,14 +144,16 @@ parts:
   - { id: p1, label: 部材, qty: 1, stock: 存在しない, length: 500 }
 `);
     expect(() => build(p, { png: false, log: silent })).toThrow(ProjectError);
-    expect(fs.existsSync(path.join(dir, "out", "summary.json"))).toBe(false);
-    // スキーマは検証より先に書き出される。
-    expect(fs.existsSync(path.join(dir, "project.schema.json"))).toBe(true);
+    expect(fs.existsSync(path.join(defaultOut(), "summary.json"))).toBe(false);
+    // v0.6: スキーマファイルのディスク再生成は廃止されたため、正本の隣に
+    // スキーマは書かれない（SPECS §4b）。
+    expect(fs.existsSync(path.join(dir, "project.schema.json"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "kidori.schema.json"))).toBe(false);
   });
 
   it("再ビルドで陳腐化した加工指示図を削除する", () => {
     const yaml = (partId: string): string => `
-meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+meta: { project: テスト, units: mm, schemaVersion: "0.3" }
 settings: { kerf: 3, edgeTrim: 5 }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19 }
@@ -176,7 +183,7 @@ describe("build（厳密探索の証明状態と表示ゲート）", () => {
       )
       .join("\n");
     const p = writeProject(`
-meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+meta: { project: テスト, units: mm, schemaVersion: "0.3" }
 settings: { kerf: 0, edgeTrim: 0, candidates: 3, selectedPlan: null }
 stocks:
   - { id: s1, label: 板, kind: sheet, length: 5000, width: 100, thickness: 18 }
@@ -203,7 +210,7 @@ ${partsYaml}
     // FFD 自体が最適（2本・下界一致）の組合せ: 厳密探索は FFD と同一構成を返し、
     // rank 全基準でタイ → タイブレークでヒューリスティック上位 → X 破棄。
     const p = writeProject(`
-meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+meta: { project: テスト, units: mm, schemaVersion: "0.3" }
 settings: { kerf: 0, edgeTrim: 0, candidates: 3, selectedPlan: null }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1000, width: 89, thickness: 19 }
@@ -254,7 +261,7 @@ parts:
 
   it("S-13: selectedPlan: X × exact: auto × 部材数16 でビルドが成功する", () => {
     const p = writeProject(`
-meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+meta: { project: テスト, units: mm, schemaVersion: "0.3" }
 settings: { kerf: 3, edgeTrim: 5, candidates: 3, exact: auto, selectedPlan: X }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19 }
@@ -272,7 +279,7 @@ parts:
 
 describe("build（現行正本反映保証: S-11 / S-12 / S-09）", () => {
   const validYaml = (partId = "p1"): string => `
-meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+meta: { project: テスト, units: mm, schemaVersion: "0.3" }
 settings: { kerf: 3, edgeTrim: 5, candidates: 3, selectedPlan: null }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19, price: 382 }
@@ -281,7 +288,7 @@ parts:
 `;
 
   const invalidYaml = `
-meta: { project: テスト, units: mm, schemaVersion: "0.2" }
+meta: { project: テスト, units: mm, schemaVersion: "0.3" }
 settings: { kerf: 3, edgeTrim: 5 }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19 }
@@ -308,7 +315,7 @@ parts:
 
   it("検証エラーで BUILD-FAILED.txt を生成し、sourceSha256 と reason を記録する", () => {
     const p = writeProject(invalidYaml);
-    const outDir = path.join(dir, "out");
+    const outDir = defaultOut();
     expect(() => build(p, { png: false, log: silent })).toThrow(ProjectError);
 
     const marker = markerPath(outDir);
@@ -326,7 +333,7 @@ parts:
 
   it("失敗の後に成功するとマーカーが消える", () => {
     const p = writeProject(invalidYaml);
-    const outDir = path.join(dir, "out");
+    const outDir = defaultOut();
     expect(() => build(p, { png: false, log: silent })).toThrow(ProjectError);
     expect(fs.existsSync(markerPath(outDir))).toBe(true);
 
@@ -365,7 +372,7 @@ parts:
 
   it("管理外ファイル（out/memo.txt）はビルドで保全される", () => {
     const p = writeProject(validYaml());
-    const outDir = path.join(dir, "out");
+    const outDir = defaultOut();
     fs.mkdirSync(outDir, { recursive: true });
     const memo = path.join(outDir, "memo.txt");
     fs.writeFileSync(memo, "手書きメモ", "utf-8");
@@ -379,7 +386,7 @@ parts:
     const spyAvail = vi.spyOn(png, "pngAvailable").mockReturnValue(false);
     try {
       const p = writeProject(validYaml());
-      const outDir = path.join(dir, "out");
+      const outDir = defaultOut();
       expect(() => build(p, { png: true, log: silent })).toThrow(KidoriError);
       // マーカーは残り、図面は生成されない。
       expect(fs.existsSync(markerPath(outDir))).toBe(true);
@@ -400,5 +407,81 @@ parts:
     const result = build(p, { png: true, log: silent });
     expect(result.pngPaths.length).toBeGreaterThan(0);
     expect(fs.existsSync(path.join(result.outDir, "plan-A.png"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.6: 出力先の導出とスキーマ再生成の廃止（SPECS §3・§4b）
+// ---------------------------------------------------------------------------
+
+describe("build（v0.6: 出力先とスキーマ）", () => {
+  const validYaml = `
+meta: { project: テスト, units: mm, schemaVersion: "0.3" }
+settings: { kerf: 3, edgeTrim: 5, candidates: 3, exact: off, selectedPlan: null }
+stocks:
+  - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19, price: 382 }
+parts:
+  - { id: p1, label: 部材, qty: 2, stock: b1, length: 800 }
+`;
+
+  function writeNamed(name: string): string {
+    const p = path.join(dir, name);
+    fs.writeFileSync(p, validYaml, "utf-8");
+    return p;
+  }
+
+  it("bookshelf.kidori.yaml → bookshelf.out/（サフィックスを丸ごと落とす）", () => {
+    const p = writeNamed("bookshelf.kidori.yaml");
+    const result = build(p, { png: false, log: silent });
+
+    expect(result.outDir).toBe(path.join(dir, "bookshelf.out"));
+    expect(fs.existsSync(path.join(result.outDir, "plan-A.svg"))).toBe(true);
+    expect(result.summary.sourceFile).toBe("bookshelf.kidori.yaml");
+  });
+
+  it("foo.yaml → foo.out/（最終拡張子のみ落とす）", () => {
+    const p = writeNamed("foo.yaml");
+    expect(build(p, { png: false, log: silent }).outDir).toBe(
+      path.join(dir, "foo.out"),
+    );
+  });
+
+  it("同一ディレクトリの複数プロジェクトが出力先で衝突しない", () => {
+    const a = build(writeNamed("bookshelf.kidori.yaml"), { png: false, log: silent });
+    const b = build(writeNamed("desk.kidori.yaml"), { png: false, log: silent });
+
+    expect(a.outDir).not.toBe(b.outDir);
+    expect(fs.existsSync(path.join(a.outDir, "plan-A.svg"))).toBe(true);
+    expect(fs.existsSync(path.join(b.outDir, "plan-A.svg"))).toBe(true);
+  });
+
+  it("BuildOptions.outDir による明示上書きは維持され、正本の隣には何も書かれない", () => {
+    const p = writeNamed("bookshelf.kidori.yaml");
+    const explicit = path.join(dir, "sandbox");
+    const result = build(p, { png: false, outDir: explicit, log: silent });
+
+    expect(result.outDir).toBe(explicit);
+    expect(fs.existsSync(path.join(explicit, "summary.json"))).toBe(true);
+    // v0.6: --out がサンドボックスとして機能する（正本の隣に副作用を残さない）。
+    expect(fs.readdirSync(dir).sort()).toEqual(["bookshelf.kidori.yaml", "sandbox"]);
+  });
+
+  it("成功ビルドでもスキーマファイルはディスクに書かれない（SPECS §4b）", () => {
+    const p = writeNamed("bookshelf.kidori.yaml");
+    build(p, { png: false, log: silent });
+
+    expect(fs.existsSync(path.join(dir, "project.schema.json"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "kidori.schema.json"))).toBe(false);
+  });
+
+  it("モードライン案内は ./kidori.schema.json を推奨する", () => {
+    const p = writeNamed("bookshelf.kidori.yaml");
+    const logs: string[] = [];
+    build(p, { png: false, log: (m) => logs.push(m) });
+
+    const guide = logs.find((m) => m.startsWith("[案内]"));
+    expect(guide).toBeDefined();
+    expect(guide!).toContain("./kidori.schema.json");
+    expect(guide!).not.toContain("project.schema.json");
   });
 });

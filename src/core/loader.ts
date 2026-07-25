@@ -1,8 +1,11 @@
 /**
- * project.yaml / project.json の読込・検証（設計正本 §2）。
+ * kidori ファイル（*.kidori.yaml / *.kidori.json 等）の読込・検証（設計正本 §2）。
  *
  * 読込パイプライン:
  * 1. `readRaw` — YAML（`.json` 以外）/ JSON（`.json`）を素のオブジェクトに読み込む。
+ * 1.5. `stocksFile:`（SPECS.md §4）の解決。参照先の stocks を読み込み、
+ *    parts[].stock の enum 注入にもその id を含める。**単段のみ**で、
+ *    絶対パス・不在・パース不能・検証エラー・多段参照はいずれも error。
  * 2. 層1: スキーマ検証（`schema.ts` の `buildSchema` を単一ソースとして再利用）。
  *    型・必須キー・enum・数値範囲・additionalProperties: false という
  *    「機械的な形」を検証する。ここでエラーがあればモデル構築に進まない
@@ -18,11 +21,12 @@
  */
 
 import { readFileSync } from "node:fs";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { parse } from "yaml";
 
 import { Issue, ProjectError } from "./errors";
 import { EPS } from "./packing/common";
-import { ID_PATTERN, buildSchema } from "./schema";
+import { ID_PATTERN, buildSchema, buildStocksFileSchema } from "./schema";
 import {
   DEFAULT_RANK,
   ExactMode,
@@ -38,8 +42,14 @@ import {
   effectiveWidth,
 } from "./types";
 
-/** meta.schemaVersion の想定値。不一致は warning（設計正本 §2 層2 項目7）。 */
-export const SUPPORTED_SCHEMA_VERSION = "0.2";
+/**
+ * meta.schemaVersion の想定値（SPECS.md v0.6 で 0.3）。
+ *
+ * 不一致は warning のまま維持する（設計正本 §2 層2 項目7）。旧版（"0.2"）の
+ * 既存ファイルもそのままビルドできる＝仕様自身の救済経路であり、専用の
+ * レガシー変換経路は設けない。
+ */
+export const SUPPORTED_SCHEMA_VERSION = "0.3";
 
 /**
  * スキーマ検証 keyword → 日本語ラベルの対応表。
@@ -52,6 +62,7 @@ const VALIDATOR_JA: Record<string, string> = {
   enum: "許可されていない値です",
   const: "固定値と一致しません",
   additionalProperties: "未知のキーが含まれています",
+  minLength: "文字列が短すぎます",
   minimum: "値が小さすぎます",
   exclusiveMinimum: "値は正の数でなければなりません",
   maximum: "値が大きすぎます",
@@ -81,11 +92,11 @@ const WINDOWS_RESERVED = new Set<string>([
 // ---------------------------------------------------------------------------
 
 /**
- * project.yaml / project.json を素の値に読み込む（検証・変換なし）。
+ * 正本ファイル（*.kidori.yaml / *.kidori.json 等）を素の値に読み込む（検証・変換なし）。
  *
  * `.json` 拡張子なら `JSON.parse`、それ以外は yaml パッケージの `parse` で
- * 読み込む（設計正本 §2）。build 側が「schema 書き出し用の stocks 抽出」に
- * 使う想定の補助関数のため、スキーマ検証・意味検証は一切行わない。
+ * 読み込む（設計正本 §2）。拡張層の動的スキーマ合成など「stocks だけ拾いたい」
+ * 用途の補助関数でもあるため、スキーマ検証・意味検証は一切行わない。
  * トップレベルが空ファイル（null）の場合は空オブジェクトを返す。
  * YAML/JSON の構文エラー・I/O エラーはそのまま伝播する。
  */
@@ -98,9 +109,11 @@ export function readRaw(filePath: string): unknown {
 /**
  * raw から stocks[].id の一覧を抽出する（壊れた入力でも可能な範囲で拾う）。
  *
- * stocks 部分だけでも読めればスキーマの enum 更新に使えるようにするため
- * （設計正本 §7: 「stocks すら読めない場合は enum なしスキーマを書く」）、
+ * stocks 部分だけでも読めれば parts[].stock の enum 合成に使えるようにするため
+ * （SPECS.md §4b。stocks すら読めない場合は enum なしスキーマになる）、
  * 型が不正な要素は無視して読み取れるものだけ集める。
+ *
+ * `stocksFile:` 参照先の id は含まない（必要なら `loadStocksFile` を併用する）。
  */
 export function extractStockIds(raw: unknown): string[] {
   if (!isPlainObject(raw)) {
@@ -180,9 +193,9 @@ type SchemaNode = Record<string, any>;
 /**
  * buildSchema が返すスキーマで value を再帰検証する。
  *
- * 解釈するキーワード: type / enum / const / minimum / exclusiveMinimum /
- * maximum / required / properties / additionalProperties: false / items /
- * uniqueItems / oneOf / anyOf。
+ * 解釈するキーワード: type / enum / const / minLength / minimum /
+ * exclusiveMinimum / maximum / required / properties /
+ * additionalProperties: false / items / uniqueItems / oneOf / anyOf。
  *
  * `pattern` は意図的に解釈しない: stocks[].id / parts[].id の pattern は
  * エディタ支援（VS Code 上の赤線）用であり、ID 安全性の権威判定は層2
@@ -222,6 +235,16 @@ function validateNode(
       keyword: "enum",
       detail: `${shortRepr(value)} は ${JSON.stringify(schema.enum)} のいずれでもありません。`,
     });
+  }
+
+  if (typeof value === "string" && typeof schema.minLength === "number") {
+    if (value.length < schema.minLength) {
+      out.push({
+        path,
+        keyword: "minLength",
+        detail: `${shortRepr(value)} は ${schema.minLength} 文字以上でなければなりません。`,
+      });
+    }
   }
 
   if (typeof value === "number") {
@@ -395,6 +418,24 @@ function buildFeature(rawFeature: Record<string, any>): Feature {
   return hole;
 }
 
+/** stocks[] の1要素を素の値から構築する（正本インライン・stocksFile 参照先で共通）。 */
+function buildStock(s: Record<string, any>): Stock {
+  const stock: Stock = {
+    id: s.id,
+    label: s.label,
+    kind: s.kind,
+    length: Number(s.length),
+    width: Number(s.width),
+    thickness: Number(s.thickness),
+    price: s.price !== null && s.price !== undefined ? Number(s.price) : null,
+  };
+  // preset は来歴メタデータ。loader は受理して素通しするだけで、ビルドは解決しない。
+  if (typeof s.preset === "string") {
+    stock.preset = s.preset;
+  }
+  return stock;
+}
+
 function buildProject(raw: Record<string, any>): Project {
   const rawMeta = raw.meta as Record<string, any>;
   const meta: Meta = {
@@ -416,15 +457,7 @@ function buildProject(raw: Record<string, any>): Project {
     selectedPlan: "selectedPlan" in rawSettings ? rawSettings.selectedPlan : null,
   };
 
-  const stocks: Stock[] = ((raw.stocks ?? []) as Record<string, any>[]).map((s) => ({
-    id: s.id,
-    label: s.label,
-    kind: s.kind,
-    length: Number(s.length),
-    width: Number(s.width),
-    thickness: Number(s.thickness),
-    price: s.price !== null && s.price !== undefined ? Number(s.price) : null,
-  }));
+  const stocks: Stock[] = ((raw.stocks ?? []) as Record<string, any>[]).map(buildStock);
 
   const parts: Part[] = ((raw.parts ?? []) as Record<string, any>[]).map((p) => ({
     id: p.id,
@@ -897,8 +930,184 @@ function semanticValidate(project: Project, raw: Record<string, unknown>): Issue
 }
 
 // ---------------------------------------------------------------------------
+// stocksFile: 外部 stocks 参照（SPECS.md §4）
+// ---------------------------------------------------------------------------
+
+/** stocksFile 由来の Issue はすべてこのパスに載せる（正本側の当該行を指す）。 */
+const STOCKS_FILE_PATH = "stocksFile";
+
+function stocksFileIssue(message: string, severity: "error" | "warning"): Issue {
+  return { path: STOCKS_FILE_PATH, message, severity };
+}
+
+/** `loadStocksFile` の結果。 */
+export interface StocksFileResult {
+  /** 参照先から読み取れた stocks（error 時は空配列）。 */
+  stocks: Stock[];
+  /** 検出された Issue（path はすべて "stocksFile"）。 */
+  issues: Issue[];
+  /** 解決できた参照先の絶対パス（解決前に失敗した場合は null）。 */
+  resolvedPath: string | null;
+}
+
+/**
+ * raw から `stocksFile:` の値を取り出す（文字列でなければ null）。
+ *
+ * 型が不正な場合は層1のスキーマ検証が error を出すため、ここでは黙って
+ * 「参照なし」として扱う（同じ誤りを二重に報告しない）。
+ */
+export function extractStocksFileRef(raw: unknown): string | null {
+  if (!isPlainObject(raw)) {
+    return null;
+  }
+  const ref = raw.stocksFile;
+  return typeof ref === "string" && ref !== "" ? ref : null;
+}
+
+/**
+ * `stocksFile:` の参照先を読み込み、stocks エントリ一覧を返す（SPECS.md §4）。
+ *
+ * 規則:
+ * - **相対パス限定**。絶対パスは error（`~` は展開しない＝そのまま相対名として
+ *   解決を試み、通常は不在 error になる）。`..` は許可する
+ *   （リポジトリ内の兄弟ディレクトリ共有は正当な用途）。symlink 検査はしない。
+ * - **単段のみ**。参照先に `stocksFile` キーがあれば error
+ *   （多段を許さないので循環は構造的に起こりえず、検出は不要）。
+ * - **不在・パース不能・検証エラーはすべて error（ビルド失敗）**。参照先は
+ *   正本セットの一部（一緒にコミットする前提）であり、欠落を warning で流すと
+ *   stocks 集合が静かに変わって異なる木取り図が黙って生成されてしまう。
+ *
+ * @param baseDir 相対パスの解決基準（通常は正本の所在ディレクトリ）。
+ * @param ref `stocksFile:` の値。
+ */
+export function loadStocksFile(baseDir: string, ref: string): StocksFileResult {
+  const fail = (message: string): StocksFileResult => ({
+    stocks: [],
+    issues: [stocksFileIssue(message, "error")],
+    resolvedPath: null,
+  });
+
+  if (isAbsolute(ref)) {
+    return fail(
+      `stocksFile は相対パスで指定してください（指定値: '${ref}'）。` +
+        "参照先は正本セットの一部として一緒にコミットする前提のため、" +
+        "絶対パスは使用できません。",
+    );
+  }
+
+  const resolvedPath = resolve(baseDir, ref);
+
+  let text: string;
+  try {
+    text = readFileSync(resolvedPath, "utf-8");
+  } catch (e) {
+    return fail(
+      `stocksFile の参照先を読み込めませんでした: '${ref}'` +
+        `（${e instanceof Error ? e.message : String(e)}）。`,
+    );
+  }
+
+  let data: unknown;
+  try {
+    data = (ref.endsWith(".json") ? JSON.parse(text) : parse(text)) ?? {};
+  } catch (e) {
+    return fail(
+      `stocksFile の参照先を解析できませんでした: '${ref}'` +
+        `（${e instanceof Error ? e.message : String(e)}）。`,
+    );
+  }
+
+  if (!isPlainObject(data)) {
+    return {
+      stocks: [],
+      issues: [
+        stocksFileIssue(
+          `stocksFile の参照先 '${ref}' のトップレベルは ` +
+            "stocks: リストを持つオブジェクト（マップ）でなければなりません。",
+          "error",
+        ),
+      ],
+      resolvedPath,
+    };
+  }
+
+  if ("stocksFile" in data) {
+    return {
+      stocks: [],
+      issues: [
+        stocksFileIssue(
+          `stocksFile の多段参照は許可されていません（参照先 '${ref}' が` +
+            "さらに stocksFile を持っています）。参照は1段だけにしてください。",
+          "error",
+        ),
+      ],
+      resolvedPath,
+    };
+  }
+
+  const schemaIssues = validateAgainstSchema(data, buildStocksFileSchema()).map(
+    (i): Issue =>
+      stocksFileIssue(
+        `stocksFile の参照先 '${ref}' の ${i.path}: ${i.message}`,
+        i.severity,
+      ),
+  );
+  if (schemaIssues.some((i) => i.severity === "error")) {
+    return { stocks: [], issues: schemaIssues, resolvedPath };
+  }
+
+  const stocks = ((data.stocks ?? []) as Record<string, any>[]).map(buildStock);
+  return { stocks, issues: schemaIssues, resolvedPath };
+}
+
+/**
+ * stocksFile 由来の stocks をインラインの stocks の後ろへマージする。
+ *
+ * id が衝突した場合は**インラインが勝つ**（SPECS.md §4「近い方が勝つ」）。
+ * 衝突は warning で通知する（Issue path は該当インラインエントリの id）。
+ *
+ * インラインのエントリを配列の先頭側に残すことで、意味検証層が発行する
+ * `stocks[i]` 形式のパスがインライン側では正本の記述位置と一致する。
+ */
+function mergeExternalStocks(project: Project, external: readonly Stock[]): Issue[] {
+  const inlineIndexById = new Map<string, number>();
+  project.stocks.forEach((s, i) => {
+    if (!inlineIndexById.has(s.id)) {
+      inlineIndexById.set(s.id, i);
+    }
+  });
+
+  const issues: Issue[] = [];
+  for (const s of external) {
+    const inlineIdx = inlineIndexById.get(s.id);
+    if (inlineIdx !== undefined) {
+      issues.push({
+        path: `stocks[${inlineIdx}].id`,
+        message:
+          `原材 id '${s.id}' は stocksFile の参照先にも定義されています。` +
+          "インラインの定義が優先されます（近い方が勝つ）。",
+        severity: "warning",
+      });
+      continue;
+    }
+    project.stocks.push(s);
+  }
+  return issues;
+}
+
+// ---------------------------------------------------------------------------
 // 公開 API
 // ---------------------------------------------------------------------------
+
+/** `loadProjectFromRaw` のオプション。 */
+export interface LoadOptions {
+  /**
+   * `stocksFile:` の相対パス解決の基準ディレクトリ（通常は正本の所在ディレクトリ）。
+   * 省略した状態で `stocksFile:` が指定されていると、参照を解決できないため
+   * warning を出して無視する（`loadProject` は常に正本のディレクトリを渡す）。
+   */
+  baseDir?: string;
+}
 
 /**
  * raw 値に対して構造検証（層1）＋意味検証（層2）を throw なしで実行する。
@@ -906,7 +1115,10 @@ function semanticValidate(project: Project, raw: Record<string, unknown>): Issue
  * severity "error" の Issue が1件でもあれば project は null。
  * 層1でエラーがあればモデル構築・層2には進まない（その時点の Issue のみ返す）。
  */
-export function loadProjectFromRaw(raw: unknown): {
+export function loadProjectFromRaw(
+  raw: unknown,
+  options: LoadOptions = {},
+): {
   project: Project | null;
   issues: Issue[];
 } {
@@ -918,25 +1130,56 @@ export function loadProjectFromRaw(raw: unknown): {
         {
           path: "<root>",
           message:
-            "project ファイルのトップレベルはオブジェクト（マップ）でなければなりません。",
+            "kidori ファイルのトップレベルはオブジェクト（マップ）でなければなりません。",
           severity: "error",
         },
       ],
     };
   }
 
-  const stockIds = extractStockIds(normalized);
+  // 1.5. stocksFile 解決（層1より先。参照先の id も parts[].stock の enum に含める）。
+  const ref = extractStocksFileRef(normalized);
+  let external: Stock[] = [];
+  const externalIssues: Issue[] = [];
+  if (ref !== null) {
+    if (options.baseDir === undefined) {
+      externalIssues.push(
+        stocksFileIssue(
+          `stocksFile: '${ref}' を解決できません（相対パスの基準ディレクトリが` +
+            "不明なため無視します）。ファイルパス経由の読込では解決されます。",
+          "warning",
+        ),
+      );
+    } else {
+      const result = loadStocksFile(options.baseDir, ref);
+      external = result.stocks;
+      externalIssues.push(...result.issues);
+    }
+  }
+  if (externalIssues.some((i) => i.severity === "error")) {
+    return { project: null, issues: externalIssues };
+  }
+
+  const stockIds = [
+    ...new Set([...extractStockIds(normalized), ...external.map((s) => s.id)]),
+  ];
   const schema = buildSchema(stockIds);
 
   const schemaIssues = validateAgainstSchema(normalized, schema);
   if (schemaIssues.some((i) => i.severity === "error")) {
-    return { project: null, issues: schemaIssues };
+    return { project: null, issues: [...externalIssues, ...schemaIssues] };
   }
 
   const project = buildProject(normalized);
+  const mergeIssues = mergeExternalStocks(project, external);
   const semanticIssues = semanticValidate(project, normalized);
 
-  const allIssues = [...schemaIssues, ...semanticIssues];
+  const allIssues = [
+    ...externalIssues,
+    ...schemaIssues,
+    ...mergeIssues,
+    ...semanticIssues,
+  ];
   if (allIssues.some((i) => i.severity === "error")) {
     return { project: null, issues: allIssues };
   }
@@ -944,9 +1187,10 @@ export function loadProjectFromRaw(raw: unknown): {
 }
 
 /**
- * project.yaml / project.json を読み込み、検証済みの Project を返す。
+ * kidori ファイル（正本）を読み込み、検証済みの Project を返す。
  *
- * パイプライン: raw 読込 → 層1（スキーマ検証） → モデル構築 → 層2（意味検証）。
+ * パイプライン: raw 読込 → stocksFile 解決 → 層1（スキーマ検証） →
+ * モデル構築＋外部 stocks マージ → 層2（意味検証）。
  *
  * @returns `{ project, warnings }`。warnings には層2で検出された warning のみが
  *   含まれる（error が1件でもあれば ProjectError を送出するため）。
@@ -956,7 +1200,9 @@ export function loadProjectFromRaw(raw: unknown): {
  */
 export function loadProject(filePath: string): { project: Project; warnings: Issue[] } {
   const raw = readRaw(filePath);
-  const { project, issues } = loadProjectFromRaw(raw);
+  const { project, issues } = loadProjectFromRaw(raw, {
+    baseDir: dirname(resolve(filePath)),
+  });
   if (project === null) {
     throw new ProjectError(issues);
   }

@@ -1,14 +1,15 @@
 /**
  * kidori の正本データモデル（内部表現）。
  *
- * project.yaml / project.json を読み込み・検証した後の内部データモデルを定義する。
+ * kidori ファイル（*.kidori.yaml / *.kidori.json 等。SPECS.md §3）を読み込み・
+ * 検証した後の内部データモデルを定義する。
  * 読込後は不変として扱う（build 処理中に変更しない）。
  *
  * 単位は mm 固定。部材ローカル座標系は左下原点・X 右・Y 上（SPECS.md §4a）。
  * YAML キーはキャメルケースのまま TypeScript プロパティ名に対応させる。
  */
 
-/** project.yaml の meta 区画。 */
+/** 正本の meta 区画。 */
 export interface Meta {
   /** プロジェクト名（例: "書棚"）。 */
   project: string;
@@ -24,7 +25,7 @@ export type RankKey = "cost" | "waste" | "cuts";
 /** 厳密探索モード（SPECS.md §4・§5）。 */
 export type ExactMode = "auto" | "on" | "off";
 
-/** project.yaml の settings 区画。割付・出力の全体設定。 */
+/** 正本の settings 区画。割付・出力の全体設定。 */
 export interface Settings {
   /** 鋸刃厚（mm）。割付時に切断ごとに消費される。デフォルト 3。 */
   kerf: number;
@@ -50,6 +51,12 @@ export interface Settings {
 export interface Stock {
   /** 原材 ID。parts[].stock から参照される。 */
   id: string;
+  /**
+   * 規格材マスタ側のキー（来歴メタデータ。任意。SPECS.md §4）。
+   * 補完確定時に自動挿入される。**ビルドは preset を一切解決しない**
+   * （実値フィールドは preset があっても全て必須のまま＝正本の自己完結性）。
+   */
+  preset?: string;
   /** 表示ラベル（例: "1×4材 6F"）。 */
   label: string;
   /** "bar"（1D割付・長さのみ使用）または "sheet"（2D割付・長さ×幅を使用）。 */
@@ -109,7 +116,7 @@ export type Feature = Groove | Hole;
 /** parts[] の1要素。切り出す部材の定義（1エントリ＝1形状 × qty 個）。 */
 export interface Part {
   /**
-   * 部材 ID。出力ファイル名（out/parts/{id}.svg）に使われるため、
+   * 部材 ID。出力ファイル名（<stem>.out/parts/{id}.svg）に使われるため、
    * `^[A-Za-z0-9][A-Za-z0-9._-]*$` に一致しなければならない（意味検証層で担保。
    * パストラバーサル・OS 予約名は error）。
    */
@@ -133,7 +140,7 @@ export interface Part {
   features: Feature[];
 }
 
-/** project.yaml / project.json 読込・検証後のトップレベルモデル。 */
+/** 正本ファイル読込・検証後のトップレベルモデル。 */
 export interface Project {
   meta: Meta;
   settings: Settings;

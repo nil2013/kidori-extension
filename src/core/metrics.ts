@@ -17,6 +17,7 @@
  * ギロチン制約対応時に再定義する）。表示上は「カット回数（概算）」として扱う。
  */
 
+import type { AdoptionRecord } from "./fingerprint";
 import type { ExactMode, Project, RankKey, Settings, Stock } from "./types";
 import { effectiveWidth } from "./types";
 import {
@@ -113,16 +114,33 @@ export interface ExactInfo {
 export interface Summary {
   schemaVersion: string;
   generatedAt: string;
-  /** 正本ファイルのベース名（例 "project.yaml"）。out/ が由来する正本の識別用。 */
+  /**
+   * 正本ファイルのベース名（例 "bookshelf.kidori.yaml"）。
+   * この `<stem>.out/` が由来する正本の識別用。
+   */
   sourceFile: string;
   /**
    * 正本ファイル（バイト列）の SHA-256（hex）。読めなければ "unknown"。
-   * `shasum -a 256 <正本>` の出力と一致すれば、この out/ が現行正本由来だと
-   * 外形的に判定できる（S-11）。
+   * `shasum -a 256 <正本>` の出力と一致すれば、この `<stem>.out/` が
+   * 現行正本由来だと外形的に判定できる（S-11）。
    */
   sourceSha256: string;
   project: string;
+  /** 正本に書かれている settings.selectedPlan の値（無効化されていてもそのまま）。 */
   selectedPlan: string | null;
+  /**
+   * 採用案とその採用時点の割付フィンガープリント（SPECS.md §5）。未採用時は null。
+   *
+   * 正本は人の操作でしか書き換えないため（§5）、採用時点の記録は派生物側に持つ。
+   * 採用案が設計変更で無効化された場合も**元のフィンガープリントのまま保存する**
+   * （新しい値で上書きすると次のビルドで警告が自動的に消えてしまうため）。
+   */
+  adopted: AdoptionRecord | null;
+  /**
+   * 採用案が採用後の設計変更で無効になっているか（SPECS.md §5）。
+   * true の間は selectedPlan を無視して全案を再生成している。
+   */
+  selectedPlanStale?: boolean;
   rank: RankKey[];
   /** rank 最上位の案 ID（候補が空の場合 null）。 */
   recommendedPlan: string | null;
@@ -467,6 +485,8 @@ export function rankPlans(
  * @param rankedPlans rankPlans() が返した rank 順の案 ID 一覧。
  * @param sourceFile 正本ファイルのベース名。
  * @param sourceSha256 正本ファイルの SHA-256（hex、読めなければ "unknown"）。
+ * @param adopted 採用案の記録（SPECS.md §5）。未採用時は null。
+ * @param selectedPlanStale 採用案が設計変更で無効化されているか。
  */
 export function buildSummary(
   plansSummaries: PlanSummary[],
@@ -476,6 +496,8 @@ export function buildSummary(
   rankedPlans: string[],
   sourceFile: string,
   sourceSha256: string,
+  adopted: AdoptionRecord | null = null,
+  selectedPlanStale = false,
 ): Summary {
   return {
     schemaVersion: project.meta.schemaVersion,
@@ -484,6 +506,8 @@ export function buildSummary(
     sourceSha256,
     project: project.meta.project,
     selectedPlan: project.settings.selectedPlan,
+    adopted,
+    selectedPlanStale,
     rank: project.settings.rank,
     recommendedPlan: rankedPlans.length > 0 ? rankedPlans[0] : null,
     rankedPlans,

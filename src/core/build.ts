@@ -3,23 +3,28 @@
  *
  * `build(projectPath, options)` が公開エントリ。フロー:
  *
- *   ① readRaw（失敗しても schema 書き出しは試みる）
- *   ② writeSchema（stocks 抽出可能なら enum 入り）
- *   ③ loadProject（error なら Issue 一覧をログ出力し ProjectError を伝播）
- *   ④ generatePlans（ヒューリスティック案 A/B/C）
- *   ⑤ runExact（settings.exact に応じた厳密探索。案 X または最適一致判定）
- *   ⑥ metrics（summarize / rankPlans / buildSummary）— 推奨案★の決定
- *   ⑦ plan-X.svg + parts/*.svg（Phase 1: 全てメモリ上に用意）
- *   ⑧ PNG（resvg-js。PNG 有効かつ利用不可なら KidoriError。S-09）
- *   ⑨ summary.json（generatedAt は build 時刻の ISO 文字列。正本ハッシュ付き）
- *   ⑩ Phase 2: tmp+rename でアトミックにコミット。summary.json を最後に書く
- *   ⑪ 管理対象パターン（plan-*.svg/png, parts/*.svg/png, summary.json）の
+ *   ① loadProject（error なら Issue 一覧をログ出力し ProjectError を伝播）
+ *   ② 前回 summary.json の読み出し → 出力先の共有検出（warning）＋
+ *      採用案の有効性判定（SPECS.md §5。割付フィンガープリントと adopted 記録を
+ *      突き合わせ、実効 selectedPlan を決める）
+ *   ③ generatePlans（ヒューリスティック案 A/B/C）
+ *   ④ runExact（settings.exact に応じた厳密探索。案 X または最適一致判定）
+ *   ⑤ metrics（summarize / rankPlans / buildSummary）— 推奨案★の決定
+ *   ⑥ plan-X.svg + parts/*.svg（Phase 1: 全てメモリ上に用意）
+ *   ⑦ PNG（resvg-js。PNG 有効かつ利用不可なら KidoriError。S-09）
+ *   ⑧ summary.json（generatedAt は build 時刻の ISO 文字列。正本ハッシュ付き）
+ *   ⑨ Phase 2: tmp+rename でアトミックにコミット。summary.json を最後に書く
+ *   ⑩ 管理対象パターン（plan-*.svg/png, parts/*.svg/png, summary.json）の
  *      陳腐化ファイル削除（管理外ファイルには触れない）＋失敗マーカー除去
  *
- * out/ の現行正本反映保証（S-11 / S-12）:
- *   - build() 全体を try/catch し、例外時は out/BUILD-FAILED.txt を書いて rethrow。
+ * 出力先は `<正本のディレクトリ>/<stem>.out/`（SPECS.md §3。`defaultOutDir`）。
+ * スキーマファイルのディスク再生成は v0.6 で廃止された（§4b）。基底スキーマの
+ * 書き出しは `kidori init` の仕事であり、`schema.ts` の `writeBaseSchema` が担う。
+ *
+ * `<stem>.out/` の現行正本反映保証（S-11 / S-12）:
+ *   - build() 全体を try/catch し、例外時は BUILD-FAILED.txt を書いて rethrow。
  *     マーカーの有無で「直近ビルドがプロセス内で完走したか」を判定できる。
- *   - summary.json に正本の SHA-256 を載せ、`shasum` との照合で out/ が現行正本
+ *   - summary.json に正本の SHA-256 を載せ、`shasum` との照合で出力が現行正本
  *     由来かを外形判定できる（プロセス強制終了などマーカーが書けない場合の分担）。
  */
 
@@ -28,8 +33,9 @@ import * as path from "node:path";
 import { createHash } from "node:crypto";
 
 import { Issue, KidoriError, ProjectError } from "./errors";
-import { extractStockIds, loadProject, readRaw } from "./loader";
-import { writeSchema } from "./schema";
+import { loadProject } from "./loader";
+import { MODELINE_PREFIX, BASE_SCHEMA_FILENAME, defaultOutDir } from "./kidorifile";
+import { AdoptionRecord, layoutFingerprint } from "./fingerprint";
 import { generatePlans } from "./packing";
 import { Plan } from "./packing/common";
 import { runExact } from "./exact";
@@ -56,11 +62,14 @@ interface Artifact {
 /** ビルド失敗マーカーのファイル名。存在＝直近ビルドが完走していない。 */
 const FAILURE_MARKER = "BUILD-FAILED.txt";
 
-/** モードライン（YAML 先頭行）の想定プレフィックス。 */
-const MODELINE_PREFIX = "# yaml-language-server: $schema=";
+/** summary.json のファイル名（前回の adopted 記録の読み出しにも使う）。 */
+const SUMMARY_FILENAME = "summary.json";
 
 export interface BuildOptions {
-  /** 出力先ディレクトリ。省略時は projectPath と同階層の out/。 */
+  /**
+   * 出力先ディレクトリ。省略時は `<正本のディレクトリ>/<stem>.out/`
+   * （SPECS.md §3。導出は `kidorifile.defaultOutDir`）。
+   */
   outDir?: string;
   /** PNG も生成するか。デフォルト true。 */
   png?: boolean;
@@ -74,7 +83,7 @@ export interface BuildResult {
   projectPath: string;
   outDir: string;
   partsDir: string;
-  /** 今回生成した割付案の ID 一覧（selectedPlan 設定時は1件のみ）。 */
+  /** 今回生成した割付案の ID 一覧（有効な採用案がある場合は1件のみ）。 */
   planIds: string[];
   svgPaths: string[];
   /** 生成した PNG のパス一覧（resvg-js 利用不可の場合は空）。 */
@@ -107,10 +116,11 @@ function checkModeline(projectPath: string, log: (m: string) => void): void {
   }
   if (!firstLine.trim().startsWith(MODELINE_PREFIX)) {
     log(
-      "[案内] project.yaml の先頭行に " +
-        `\`${MODELINE_PREFIX}./project.schema.json\` を追記すると、` +
+      "[案内] 正本ファイルの先頭行に " +
+        `\`${MODELINE_PREFIX}./${BASE_SCHEMA_FILENAME}\` を追記すると、` +
         "VS Code 以外のエディタでも補完・検証が有効になります" +
-        "（kidori 拡張を使う場合は不要です）。",
+        `（kidori 拡張を使う場合は不要です。${BASE_SCHEMA_FILENAME} は ` +
+        "`kidori init` が書き出します）。",
     );
   }
 }
@@ -152,7 +162,7 @@ function computeSourceSha256(projectPath: string): string {
 }
 
 /**
- * ビルド失敗マーカー out/BUILD-FAILED.txt を書き出す。out/ が未作成なら作る。
+ * ビルド失敗マーカー `<出力先>/BUILD-FAILED.txt` を書き出す。出力先が未作成なら作る。
  * マーカー書き込み自体の失敗はログして握りつぶす（元の例外の伝播を妨げない）。
  */
 function writeFailureMarker(
@@ -166,7 +176,7 @@ function writeFailureMarker(
     fs.mkdirSync(outDir, { recursive: true });
     const reason = error instanceof Error ? error.message : String(error);
     const content =
-      "この out/ の図面は最新の正本を反映していません（ビルド失敗）。\n" +
+      "この出力ディレクトリの図面は最新の正本を反映していません（ビルド失敗）。\n" +
       "最新の図面を得るには、正本を修正して再ビルドしてください。\n" +
       `failedAt: ${isoNow()}\n` +
       `source: ${sourceFile}\n` +
@@ -250,9 +260,13 @@ export function exactPlanStrictlyBetter(
 /**
  * 割付案の生成＋厳密探索の統合（v0.4 §5）。
  *
- * - selectedPlan が A/B/C: その案のみ生成し、厳密探索は省略する。
- * - selectedPlan が "X": 厳密探索の案 X のみ生成する（生成不能なら KidoriError）。
- * - selectedPlan が null: A/B/C を生成し、settings.exact に応じて厳密探索を実行。
+ * `selected` は正本の `settings.selectedPlan` そのものではなく、採用案の有効性
+ * 判定（`resolveAdoption`）を通した**実効選択**である（無効化中は null になり、
+ * 全案が再生成される）。
+ *
+ * - selected が A/B/C: その案のみ生成し、厳密探索は省略する。
+ * - selected が "X": 厳密探索の案 X のみ生成する（生成不能なら KidoriError）。
+ * - selected が null: A/B/C を生成し、settings.exact に応じて厳密探索を実行。
  *   - 厳密解の必要本数が全 stock で一致するヒューリスティック案には、厳密探索が
  *     最適性を証明できた（exact.proven）場合に限り exactMatch を立てる。
  *   - 一致案があっても、案 X が rank 上で一致した全案より厳密に上位（例: 同じ本数で
@@ -262,16 +276,18 @@ export function exactPlanStrictlyBetter(
  *   - 案 X の summary には exactProven（＝exact.proven）を設定し、表示側が
  *     「候補X（厳密解）」/「探索案X（最適性未証明）」を出し分けられるようにする。
  */
-function generateAllPlans(project: Project): {
+function generateAllPlans(
+  project: Project,
+  selected: string | null,
+): {
   plans: Plan[];
   summaries: PlanSummary[];
   exactInfo: ExactInfo;
 } {
   const settings = project.settings;
-  const selected = settings.selectedPlan;
   const mode = settings.exact;
 
-  const heuristics = generatePlans(project);
+  const heuristics = generatePlans(project, selected);
 
   if (selected !== null && selected !== "X") {
     return {
@@ -372,8 +388,164 @@ function generateAllPlans(project: Project): {
   };
 }
 
+/** 前回ビルドの summary.json から読み出した、今回のビルドに効く情報。 */
+interface PreviousSummary {
+  /** 採用記録（SPECS.md §5）。無い・壊れているなら null。 */
+  adopted: AdoptionRecord | null;
+  /** 前回この出力先を書いた正本のベース名。読めなければ null。 */
+  sourceFile: string | null;
+}
+
+const NO_PREVIOUS: PreviousSummary = { adopted: null, sourceFile: null };
+
 /**
- * project.yaml / project.json から SVG・PNG・summary.json を生成する。
+ * 前回ビルドの summary.json を読み出す。
+ *
+ * 読めない・壊れている・形が違う場合はすべて「記録なし（null）」として扱う
+ * （壊れた summary.json でビルドが死んではならない）。項目ごとに独立して
+ * 判定するため、adopted が壊れていても sourceFile は拾える（逆も同様）。
+ */
+function readPreviousSummary(outDir: string): PreviousSummary {
+  let data: unknown;
+  try {
+    data = JSON.parse(fs.readFileSync(path.join(outDir, SUMMARY_FILENAME), "utf-8"));
+  } catch {
+    return NO_PREVIOUS;
+  }
+  if (typeof data !== "object" || data === null) {
+    return NO_PREVIOUS;
+  }
+  const record = data as { adopted?: unknown; sourceFile?: unknown };
+
+  let adopted: AdoptionRecord | null = null;
+  const raw = record.adopted;
+  if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+    const { plan, fingerprint } = raw as Record<string, unknown>;
+    if (
+      typeof plan === "string" &&
+      plan !== "" &&
+      typeof fingerprint === "string" &&
+      fingerprint !== ""
+    ) {
+      adopted = { plan, fingerprint };
+    }
+  }
+
+  const sourceFile =
+    typeof record.sourceFile === "string" && record.sourceFile !== ""
+      ? record.sourceFile
+      : null;
+
+  return { adopted, sourceFile };
+}
+
+/**
+ * 出力先が別の正本と共有されていないかを O(1) で確認する。
+ *
+ * `<stem>.out/` 規則（SPECS.md §3）では `foo.yaml` と `foo.kidori.yaml` が
+ * 同居すると出力先が衝突し、互いの成果物を静かに上書きし合う。ディレクトリ
+ * 走査によるガードは per-file ビルドの独立性に反するため行わず、CORE-7 で
+ * どのみち読んでいる前回 summary.json の `sourceFile` を流用して検出する。
+ *
+ * 正当なユースケースではないがビルド自体は成功させてよいので warning とする。
+ * summary.json が無い・壊れている場合は何もしない（「記録なし」扱い）。
+ */
+function checkOutDirOwner(
+  previousSourceFile: string | null,
+  sourceFile: string,
+  outDir: string,
+): Issue | null {
+  if (previousSourceFile === null || previousSourceFile === sourceFile) {
+    return null;
+  }
+  return {
+    path: "<root>",
+    message:
+      `この出力先は別の正本 (${previousSourceFile}) と共有されています` +
+      `（${outDir}）。同じ出力先を使う正本どうしは成果物を上書きし合います。` +
+      "どちらかのファイル名を変えるか、--out で出力先を分けてください。",
+    severity: "warning",
+  };
+}
+
+/** `resolveAdoption` の結果。 */
+interface AdoptionState {
+  /** 実効的な採用案（無効化中は null ＝全案再生成）。 */
+  effectiveSelected: string | null;
+  /** summary.json に書き戻す採用記録。 */
+  adopted: AdoptionRecord | null;
+  /** 採用案が設計変更で無効化されているか。 */
+  stale: boolean;
+  /** 無効化を通知する warning Issue（無効化していなければ null）。 */
+  issue: Issue | null;
+}
+
+/**
+ * 採用案の有効性を判定する（SPECS.md §5「採用後の設計変更」）。
+ *
+ * 規則:
+ * - `selectedPlan: null` → 全案生成、記録なし。
+ * - `selectedPlan: P` で有効な記録が無い（出力ディレクトリが新規・手編集・
+ *   チェックアウト直後）、または記録が別の案のもの → **今を採用時点とみなし**
+ *   P のみ生成して `{P, 現 fp}` を記録する。
+ * - 記録 `{P, F}` があり `F == 現 fp` → 有効。P のみ生成し記録を持ち回る。
+ * - `F != 現 fp` → **無効**。`selectedPlan` を無視して全案を再生成し、warning で
+ *   再選択を促す。このとき **`{P, F}` を元のまま保存する**のが要諦で、現 fp で
+ *   上書きすると次のビルドが「自己治癒」して警告が消えてしまう。元 fp を保持
+ *   すれば、幾何を F に戻したときだけ正しく再有効化される。
+ *
+ * `selectedPlan` の値自体は自動では書き換えない（正本の書き換えは人の操作に限る）。
+ */
+export function resolveAdoption(
+  requested: string | null,
+  fingerprint: string,
+  previous: AdoptionRecord | null,
+): AdoptionState {
+  if (requested === null) {
+    return {
+      effectiveSelected: null,
+      adopted: null,
+      stale: false,
+      issue: null,
+    };
+  }
+
+  if (previous === null || previous.plan !== requested) {
+    // 記録なし（または別案の記録）→ 今を採用時点とみなす。
+    return {
+      effectiveSelected: requested,
+      adopted: { plan: requested, fingerprint },
+      stale: false,
+      issue: null,
+    };
+  }
+
+  if (previous.fingerprint === fingerprint) {
+    return {
+      effectiveSelected: requested,
+      adopted: previous,
+      stale: false,
+      issue: null,
+    };
+  }
+
+  return {
+    effectiveSelected: null,
+    // 元のフィンガープリントを保持する（自己治癒させない）。
+    adopted: previous,
+    stale: true,
+    issue: {
+      path: "settings.selectedPlan",
+      message:
+        `採用案 ${requested} は設計変更後の割付に基づいていません。` +
+        "案を選び直してください（全案を再生成しました）。",
+      severity: "warning",
+    },
+  };
+}
+
+/**
+ * kidori ファイル（正本）から SVG・PNG・summary.json を生成する。
  *
  * @throws ProjectError 正本データの検証エラーがある場合（送出前に Issue をログ出力）。
  * @throws KidoriError selectedPlan: "X" なのに案 X を生成できない場合等。
@@ -384,12 +556,12 @@ export function build(projectPath: string, options: BuildOptions = {}): BuildRes
   projectPath = path.resolve(projectPath);
   const outDir = options.outDir
     ? path.resolve(options.outDir)
-    : path.join(path.dirname(projectPath), "out");
+    : defaultOutDir(projectPath);
 
   const sourceFile = path.basename(projectPath);
   const sourceSha256 = computeSourceSha256(projectPath);
 
-  // S-11: build() 全体を try/catch し、いかなる例外でも out/ に失敗マーカーを
+  // S-11: build() 全体を try/catch し、いかなる例外でも出力先に失敗マーカーを
   // 残してから rethrow する（マーカーなし＝直近ビルド完走の不変条件）。
   try {
     return buildInner(projectPath, outDir, sourceFile, sourceSha256, options, log);
@@ -413,19 +585,7 @@ function buildInner(
 
   checkModeline(projectPath, log);
 
-  // ① raw 読込（失敗しても schema 書き出しは試みる）。
-  let rawForSchema: unknown = null;
-  try {
-    rawForSchema = readRaw(projectPath);
-  } catch {
-    rawForSchema = null;
-  }
-  const stockIds = extractStockIds(rawForSchema);
-
-  // ② schema 書き出し（検証より先に、毎回）。
-  writeSchema(projectPath, stockIds);
-
-  // ③ 検証。
+  // ① 検証（スキーマファイルのディスク再生成は v0.6 で廃止。SPECS.md §4b）。
   let project: Project;
   let warnings: Issue[];
   try {
@@ -440,16 +600,41 @@ function buildInner(
     }
     throw e;
   }
+
+  // ② 前回ビルドの summary.json を1回だけ読み、(a) 出力先の共有検出と
+  //    (b) 採用案の有効性判定（SPECS.md §5）に使う。
+  const previous = readPreviousSummary(outDir);
+
+  const ownerIssue = checkOutDirOwner(previous.sourceFile, sourceFile, outDir);
+  if (ownerIssue !== null) {
+    warnings = [...warnings, ownerIssue];
+  }
+
+  // 現在の割付フィンガープリントと前回の adopted 記録を突き合わせ、
+  // 実効的な選択を決める。
+  const fingerprint = layoutFingerprint(project);
+  const adoption = resolveAdoption(
+    project.settings.selectedPlan,
+    fingerprint,
+    previous.adopted,
+  );
+  if (adoption.issue !== null) {
+    warnings = [...warnings, adoption.issue];
+  }
   for (const issue of warnings) {
     printIssue(issue, log);
   }
 
-  // ④⑤⑥ 割付案生成＋厳密探索＋ランキング。
-  const { plans, summaries, exactInfo } = generateAllPlans(project);
+  // ③④⑤ 割付案生成＋厳密探索＋ランキング。
+  const { plans, summaries, exactInfo } = generateAllPlans(
+    project,
+    adoption.effectiveSelected,
+  );
   const rankedPlans = rankPlans(summaries, project.settings.rank);
 
-  // selectedPlan 採用後は推奨★表示を行わない（採用案のみの再生成のため）。
-  const recommendationActive = project.settings.selectedPlan === null;
+  // 有効な採用案がある間は推奨★表示を行わない（採用案のみの再生成のため）。
+  // 無効化中は全案を再生成しているので推奨★を復活させる。
+  const recommendationActive = adoption.effectiveSelected === null;
   if (!recommendationActive) {
     for (const s of summaries) {
       s.recommended = false;
@@ -465,11 +650,13 @@ function buildInner(
     recommendationActive ? rankedPlans : [],
     sourceFile,
     sourceSha256,
+    adoption.adopted,
+    adoption.stale,
   );
 
   // ---- Phase 1（純メモリ）: 全 SVG・全 PNG・summary.json を artifacts に集める ----
-  // out/ には一切書かない。この段階での例外（PNG 変換・パス検証等）は build() の
-  // try/catch へ伝播し、out/ を無変更のまま失敗マーカーだけが残る（S-12）。
+  // 出力先には一切書かない。この段階での例外（PNG 変換・パス検証等）は build() の
+  // try/catch へ伝播し、出力先を無変更のまま失敗マーカーだけが残る（S-12）。
 
   // S-09: PNG が確定要件のため、PNG 有効なのに resvg-js が使えなければここで失敗させる。
   if (png && !pngAvailable()) {
@@ -486,7 +673,7 @@ function buildInner(
   const svgPaths: string[] = [];
   const pngPaths: string[] = [];
 
-  // ⑦ 木取り図 SVG（＋⑧ PNG）。
+  // ⑥ 木取り図 SVG（＋⑦ PNG）。
   plans.forEach((plan, i) => {
     const svgText = renderCutplan(plan, project, summaries[i]);
     const svgName = `plan-${plan.id}.svg`;
@@ -506,8 +693,9 @@ function buildInner(
     }
   });
 
-  // 加工指示図: selectedPlan 設定時のみヘッダに配置番号（Plan.seq）を渡す。
-  const selectedPlanId = project.settings.selectedPlan;
+  // 加工指示図: 有効な採用案がある場合のみヘッダに配置番号（Plan.seq）を渡す。
+  // 無効化中は全案を再生成しているため、配置番号は連動させない。
+  const selectedPlanId = adoption.effectiveSelected;
   const seqByPart = new Map<string, number[]>();
   if (selectedPlanId !== null) {
     const selected = plans.find((p) => p.id === selectedPlanId);
@@ -556,8 +744,8 @@ function buildInner(
     }
   }
 
-  // ⑨ summary.json（コミット記録として最後に確定する）。
-  const summaryName = "summary.json";
+  // ⑧ summary.json（コミット記録として最後に確定する）。
+  const summaryName = SUMMARY_FILENAME;
   const summaryPath = path.join(outDir, summaryName);
   const summaryData = JSON.stringify(summary, null, 2) + "\n";
 
@@ -573,10 +761,10 @@ function buildInner(
   }
   writeArtifactAtomic(outDir, { name: summaryName, data: summaryData });
 
-  // ⑩ 陳腐化ファイル削除。
+  // ⑨ 陳腐化ファイル削除。
   cleanupStale(outDir, partsDir, managedSvg, managedPng);
 
-  // ⑪ 成功コミットの最終ステップ: 失敗マーカーを除去する。
+  // ⑩ 成功コミットの最終ステップ: 失敗マーカーを除去する。
   fs.rmSync(path.join(outDir, FAILURE_MARKER), { force: true });
 
   return {

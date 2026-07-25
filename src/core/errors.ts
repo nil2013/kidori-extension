@@ -25,7 +25,7 @@ export class KidoriError extends Error {
   }
 }
 
-/** 正本データ（project.yaml / project.json）の検証エラー。 */
+/** 正本データ（kidori ファイル）の検証エラー。 */
 export class ProjectError extends KidoriError {
   readonly issues: Issue[];
 

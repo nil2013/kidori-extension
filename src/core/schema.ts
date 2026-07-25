@@ -1,11 +1,14 @@
 /**
- * project.yaml / project.json 用 JSON Schema の生成（設計正本 §7）。
+ * kidori ファイル（*.kidori.yaml / *.kidori.json 等）用 JSON Schema の生成。
  *
  * **単一ソース原則**: ここで組み立てるスキーマは、
- * 1. VS Code の YAML/JSON 拡張が補完・検証・ホバー説明に使うファイル（project.schema.json）
- * 2. loader.ts の層1（スキーマ検証）
+ * 1. 拡張層がファイルごとにメモリ上で合成して YAML/JSON 言語サービスへ供給する
+ *    スキーマ（SPECS.md §4b。ディスクへの再生成は v0.6 で廃止）
+ * 2. `kidori init` が書き出す基底スキーマ `kidori.schema.json`
+ *    （動的 enum なし。モードライン参照用。§3a）
+ * 3. loader.ts の層1（スキーマ検証）
  *
- * の両方に使われる唯一の定義である。検証ロジックを2箇所に書かない。
+ * のすべてに使われる唯一の定義である。検証ロジックを2箇所に書かない。
  *
  * 役割分担（設計正本 §2・§7 に明記）:
  * - スキーマ検証（本モジュール・層1）が担うのは型・必須キー・enum・数値範囲・
@@ -18,7 +21,9 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+
+import { BASE_SCHEMA_FILENAME } from "./kidorifile";
 
 /** Draft 2020-12 の $schema URI。 */
 export const DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema";
@@ -50,9 +55,18 @@ export const DESCRIPTIONS: Record<string, string> = {
     "（分枝限定）を実行し、真に最適な構成を候補 X として加える。on は常に実行、off は実行しない。",
   "settings.selectedPlan":
     '採用した案の ID（"A"/"B"/"C"/"X"。X は厳密探索案）。null の間は全案を出力する。',
+  stocksFile:
+    "外部 stocks ファイル（例: 同居プロジェクト間で共有する ./stocks.yaml）への参照。" +
+    "相対パス限定とし、参照先は正本セットの一部（一緒にコミットする前提）。" +
+    "参照先はトップレベル stocks: リストを持つ1段のみのファイルで、" +
+    "インラインの stocks と id が衝突した場合はインラインが勝つ。",
   "stocks.id":
     "原材 ID。parts[].stock から参照される。出力ファイル名に使用するため、" +
     "英数字で始まり英数字・「.」「_」「-」のみ使用できる。",
+  "stocks.preset":
+    "規格材マスタ側のキー（来歴メタデータ。任意）。補完確定時に自動挿入される。" +
+    "ビルドは preset を一切解決せず、実値フィールドは preset があっても全て必須のまま" +
+    "（正本の自己完結性を維持）。マスタへの追従をやめたいときはキーを消すだけでよい。",
   "stocks.label": '表示ラベル（例: "1×4材 6F"）。',
   "stocks.kind": "bar（1D割付・長さのみ使用）または sheet（2D割付・長さ×幅を使用）。",
   "stocks.length": "原材の長さ（mm）。",
@@ -60,7 +74,7 @@ export const DESCRIPTIONS: Record<string, string> = {
   "stocks.thickness": "原材の厚み（mm）。",
   "stocks.price": "単価（円）。省略可。省略時は費用計算で price 欠落として扱われる。",
   "parts.id":
-    "部材 ID。出力ファイル名（out/parts/{id}.svg）に使われるため、" +
+    "部材 ID。出力ファイル名（<stem>.out/parts/{id}.svg）に使われるため、" +
     "英数字で始まり英数字・「.」「_」「-」のみ使用できる。",
   "parts.label": "表示ラベル。",
   "parts.qty": "必要数量。",
@@ -144,6 +158,13 @@ function stockSchema(): Record<string, unknown> {
     required: ["id", "label", "kind", "length", "width", "thickness"],
     properties: {
       id: { type: "string", pattern: ID_PATTERN, description: DESCRIPTIONS["stocks.id"] },
+      // preset にパターン制約は課さない: マスタキーの命名体系は SPECS §8 で未確定であり、
+      // いま文字種を固定すると移行負債になる（ビルドは値を解釈しない）。
+      preset: {
+        type: "string",
+        minLength: 1,
+        description: DESCRIPTIONS["stocks.preset"],
+      },
       label: { type: "string", description: DESCRIPTIONS["stocks.label"] },
       kind: { enum: ["bar", "sheet"], description: DESCRIPTIONS["stocks.kind"] },
       length: {
@@ -175,7 +196,7 @@ function partSchema(stockIds: readonly string[]): Record<string, unknown> {
     type: "string",
     description: DESCRIPTIONS["parts.stock"],
   };
-  // enum: [] は全入力を弾くため禁止（設計正本 §7）。空なら type: string のみ。
+  // enum: [] は全入力を弾くため禁止（SPECS.md §4b）。空なら type: string のみ。
   if (stockIds.length > 0) {
     stockProp.enum = [...stockIds];
   }
@@ -215,11 +236,11 @@ function partSchema(stockIds: readonly string[]): Record<string, unknown> {
 }
 
 /**
- * project.yaml / project.json の JSON Schema（Draft 2020-12）を組み立てて返す。
+ * kidori ファイル（正本）の JSON Schema（Draft 2020-12）を組み立てて返す。
  *
- * @param stockIds その時点で読み取れた stocks[].id の一覧。parts[].stock の
- *   enum 動的注入に使う（設計正本 §7）。空配列なら enum を付与しない
- *   （enum: [] は全入力を弾いてしまうため）。
+ * @param stockIds その時点で読み取れた stocks[].id の一覧（stocksFile 参照先の
+ *   id を含めてよい）。parts[].stock の enum 動的注入に使う（SPECS.md §4b）。
+ *   空配列なら enum を付与しない（enum: [] は全入力を弾いてしまうため）。
  * @returns JSON Schema（プレーンオブジェクト）。additionalProperties: false を
  *   全階層で強制する。
  */
@@ -228,11 +249,18 @@ export function buildSchema(stockIds: readonly string[]): Record<string, unknown
     $schema: DRAFT_2020_12,
     title: "kidori project",
     description:
-      "kidori project.yaml / project.json のスキーマ（kidori build 実行時に自動再生成される）。",
+      "kidori ファイル（*.kidori.yaml / *.kidori.json 等）のスキーマ。" +
+      "拡張はファイルごとにメモリ上で合成して供給し、kidori init は動的 enum なしの" +
+      "基底スキーマを kidori.schema.json として書き出す（SPECS.md §3a・§4b）。",
     type: "object",
     additionalProperties: false,
     required: ["meta", "stocks", "parts"],
     properties: {
+      stocksFile: {
+        type: "string",
+        minLength: 1,
+        description: DESCRIPTIONS["stocksFile"],
+      },
       meta: {
         type: "object",
         additionalProperties: false,
@@ -301,6 +329,32 @@ export function buildSchema(stockIds: readonly string[]): Record<string, unknown
 }
 
 /**
+ * `stocksFile:` の参照先ファイルのスキーマ（SPECS.md §4）。
+ *
+ * 参照先はトップレベル `stocks:` リストのみを持つ**単段**のファイルであり、
+ * 正本のエントリと同一形（stockSchema）を使う。`additionalProperties: false` に
+ * より多段参照（参照先の `stocksFile:`）も構造的に弾かれる
+ * （loader は専用のエラーメッセージを出すため、その前に自前で検出する）。
+ */
+export function buildStocksFileSchema(): Record<string, unknown> {
+  return {
+    $schema: DRAFT_2020_12,
+    title: "kidori stocks file",
+    description:
+      "kidori の外部 stocks ファイル（stocksFile: の参照先。SPECS.md §4）。",
+    type: "object",
+    additionalProperties: false,
+    required: ["stocks"],
+    properties: {
+      stocks: {
+        type: "array",
+        items: stockSchema(),
+      },
+    },
+  };
+}
+
+/**
  * スキーマの JSON 文字列表現を返す（インデント2・末尾改行付き）。
  */
 export function schemaJson(stockIds: readonly string[]): string {
@@ -308,18 +362,27 @@ export function schemaJson(stockIds: readonly string[]): string {
 }
 
 /**
- * projectPath の隣に project.schema.json を書き出す。
+ * 基底スキーマ（動的 enum なし）の JSON 文字列表現（SPECS.md §3a・§4b）。
  *
- * kidori build / watch の毎回、検証より先に呼び出される想定（設計正本 §7）。
- * stocks が読み取れない不正なドキュメントでも、stockIds に空配列を渡せば
- * enum なしのスキーマを書き出せる。
- *
- * @param projectPath project.yaml（または project.json）のパス。
- * @param stockIds parts[].stock の enum に注入する原材 id 一覧。
- * @returns 書き出した project.schema.json のパス。
+ * ビルド時のディスク再生成は v0.6 で廃止された。この文字列を使うのは
+ * `kidori init` による `kidori.schema.json` の書き出しと、VS Code 外の環境向けの
+ * モードライン参照だけである。
  */
-export function writeSchema(projectPath: string, stockIds: readonly string[]): string {
-  const schemaPath = join(dirname(projectPath), "project.schema.json");
-  writeFileSync(schemaPath, schemaJson(stockIds), "utf-8");
+export function baseSchemaJson(): string {
+  return schemaJson([]);
+}
+
+/**
+ * ディレクトリ直下に基底スキーマ `kidori.schema.json` を書き出す（`kidori init` 用）。
+ *
+ * 動的 enum（parts[].stock）は含めない。ファイルごとの enum 合成は拡張層が
+ * メモリ上で行う（SPECS.md §4b）。
+ *
+ * @param dir 書き出し先ディレクトリ。
+ * @returns 書き出した kidori.schema.json の絶対パス（dir が相対なら dir 基準）。
+ */
+export function writeBaseSchema(dir: string): string {
+  const schemaPath = join(dir, BASE_SCHEMA_FILENAME);
+  writeFileSync(schemaPath, baseSchemaJson(), "utf-8");
   return schemaPath;
 }

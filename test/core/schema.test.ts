@@ -26,23 +26,28 @@ import {
   DESCRIPTIONS,
   DRAFT_2020_12,
   ID_PATTERN,
+  baseSchemaJson,
   buildSchema,
+  buildStocksFileSchema,
   schemaJson,
-  writeSchema,
+  writeBaseSchema,
 } from "../../src/core/schema";
 
 const SPECS_EXAMPLE_YAML = `\
-# yaml-language-server: $schema=./project.schema.json
-meta: { project: 書棚, units: mm, schemaVersion: "0.2" }
+# yaml-language-server: $schema=./kidori.schema.json
+meta: { project: 書棚, units: mm, schemaVersion: "0.3" }
 
 settings:
   kerf: 3            # 鋸刃厚（mm）
   edgeTrim: 5        # 木口の捨て代（mm）
   candidates: 3
+  rank: [cost, waste, cuts]   # 推奨案の評価優先順
+  exact: auto        # 小規模時は厳密探索（auto/on/off）
   selectedPlan: null
 
 stocks:
-  - { id: 1x4-6f,  label: "1×4材 6F",        kind: bar,   length: 1820, width: 89,  thickness: 19, price: 382 }
+  # preset: 補完確定時に挿入される規格材マスタの来歴キー（ビルドは読まない。§4b）
+  - { id: 1x4-6f,  preset: spf/1x4/6f, label: "1×4材 6F", kind: bar, length: 1820, width: 89, thickness: 19, price: 382 }
   - { id: pine-18, label: "パイン集成材18mm", kind: sheet, length: 1820, width: 910, thickness: 18, price: 6356 }
 
 parts:
@@ -61,7 +66,7 @@ parts:
 /** conftest.py の minimal_project 相当（スキーマ層の検証対象として使う）。 */
 function minimalProject(): any {
   return {
-    meta: { project: "テスト棚", units: "mm", schemaVersion: "0.2" },
+    meta: { project: "テスト棚", units: "mm", schemaVersion: "0.3" },
     settings: { kerf: 3, edgeTrim: 5, candidates: 3, selectedPlan: null },
     stocks: [
       {
@@ -264,7 +269,7 @@ describe("スキーマ検証", () => {
       dia: 4,
     };
     const project = {
-      meta: { project: "p", units: "mm", schemaVersion: "0.2" },
+      meta: { project: "p", units: "mm", schemaVersion: "0.3" },
       stocks: [
         { id: "s1", label: "s1", kind: "sheet", length: 1000, width: 1000, thickness: 10 },
       ],
@@ -324,7 +329,7 @@ describe("スキーマ検証", () => {
 // schemaJson / writeSchema
 // ---------------------------------------------------------------------------
 
-describe("schemaJson / writeSchema", () => {
+describe("schemaJson / baseSchemaJson / writeBaseSchema", () => {
   it("schemaJson は末尾改行付きで buildSchema と一致する", () => {
     const text = schemaJson(["a"]);
 
@@ -336,18 +341,95 @@ describe("schemaJson / writeSchema", () => {
     expect(schemaJson([])).toContain("鋸刃厚");
   });
 
-  it("writeSchema は project.schema.json を書き出し buildSchema と一致する", () => {
-    const projectPath = join(tmpDir, "project.yaml");
-    writeFileSync(projectPath, "meta: {}\n", "utf-8");
+  it("baseSchemaJson は動的 enum を含まない（stocks 空の buildSchema と一致）", () => {
+    const parsed = JSON.parse(baseSchemaJson()) as any;
 
-    const stockIds = ["a", "b"];
-    const schemaPath = writeSchema(projectPath, stockIds);
+    expect(parsed).toEqual(buildSchema([]));
+    expect(parsed.properties.parts.items.properties.stock.enum).toBeUndefined();
+  });
 
-    expect(schemaPath).toBe(join(tmpDir, "project.schema.json"));
+  // v0.6: スキーマファイルのディスク再生成は廃止され（SPECS §4b）、書き出しは
+  // `kidori init` が基底スキーマ kidori.schema.json を1回置くだけになった。
+  it("writeBaseSchema は kidori.schema.json を書き出し基底スキーマと一致する", () => {
+    const schemaPath = writeBaseSchema(tmpDir);
+
+    expect(schemaPath).toBe(join(tmpDir, "kidori.schema.json"));
     expect(existsSync(schemaPath)).toBe(true);
 
     const written = JSON.parse(readFileSync(schemaPath, "utf-8"));
-    expect(written).toEqual(buildSchema(stockIds));
+    expect(written).toEqual(buildSchema([]));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.6: stocks[].preset / stocksFile / stocksFile 参照先スキーマ
+// ---------------------------------------------------------------------------
+
+describe("v0.6: stocks[].preset", () => {
+  it("preset 文字列を pass する", () => {
+    const data = minimalProject();
+    data.stocks[0].preset = "spf/1x4/6f";
+
+    expect(validate(data)).toEqual([]);
+  });
+
+  it("preset にパターン制約は課さない（SPECS §8 でキーの命名体系が未確定）", () => {
+    const schema = buildSchema([]) as any;
+    const preset = schema.properties.stocks.items.properties.preset;
+
+    expect(preset.type).toBe("string");
+    expect(preset.minLength).toBe(1);
+    expect(preset.pattern).toBeUndefined();
+  });
+
+  it("preset の空文字列は minLength で fail する", () => {
+    const data = minimalProject();
+    data.stocks[0].preset = "";
+
+    expect(validate(data).some((i) => i.path === "stocks[0].preset")).toBe(true);
+  });
+});
+
+describe("v0.6: stocksFile", () => {
+  it("トップレベル stocksFile の文字列を pass する", () => {
+    const data = minimalProject();
+    data.stocksFile = "./stocks.yaml";
+
+    expect(validate(data)).toEqual([]);
+  });
+
+  it("stocksFile が文字列でなければ fail する", () => {
+    const data = minimalProject();
+    data.stocksFile = 42;
+
+    expect(validate(data).some((i) => i.path === "stocksFile")).toBe(true);
+  });
+
+  it("参照先スキーマはトップレベル stocks: リストのみを許す", () => {
+    const schema = buildStocksFileSchema();
+
+    expect(
+      validateAgainstSchema(
+        {
+          stocks: [
+            {
+              id: "b1",
+              label: "棒",
+              kind: "bar",
+              length: 1820,
+              width: 89,
+              thickness: 19,
+            },
+          ],
+        },
+        schema,
+      ),
+    ).toEqual([]);
+    // stocks 欠落・多段参照（stocksFile）はいずれも構造的に弾かれる。
+    expect(validateAgainstSchema({}, schema).length).toBeGreaterThan(0);
+    expect(
+      validateAgainstSchema({ stocks: [], stocksFile: "./more.yaml" }, schema).length,
+    ).toBeGreaterThan(0);
   });
 });
 

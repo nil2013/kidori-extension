@@ -145,23 +145,28 @@ export function buildPlan(
  * - stock id ごとに部材を分け、Stock.kind に応じ pack1d / pack2d に委譲する
  *   （方式は PLAN_METHODS の固定ペア）。
  * - settings.candidates を 1〜3 にクランプした件数の案を生成する。
- * - settings.selectedPlan が設定されている場合は、クランプ後の候補一覧の
+ * - 採用案（selected）が指定されている場合は、クランプ後の候補一覧の
  *   うち該当する案 ID の Plan のみを生成する（他案のアルゴリズムは実行しない）。
- *   selectedPlan がクランプ後の範囲外の場合は空リストを返す（selectedPlan が
+ *   採用案がクランプ後の範囲外の場合は空リストを返す（採用案が
  *   "X"（厳密探索案）の場合も同様に空リストとなり、案 X は別モジュールが担う。
  *   不正な組み合わせは loader の意味検証層で既に error として弾かれる前提で
  *   あり、本関数はその防御を重ねて行わない）。
  *
  * @param project 検証済みの Project（loader の戻り値を想定）。
+ * @param selected 実効的な採用案 ID。省略時は `project.settings.selectedPlan`。
+ *   build.ts は採用後の設計変更による無効化判定（SPECS.md §5）を通した
+ *   **実効選択**を明示的に渡す（無効化中は null ＝全案生成）。
  * @returns 生成された Plan のリスト（候補順、最大3件）。
  */
-export function generatePlans(project: Project): Plan[] {
+export function generatePlans(
+  project: Project,
+  selected: string | null = project.settings.selectedPlan,
+): Plan[] {
   const instancesByStock = expandInstancesByStock(project);
 
   const clamped = Math.max(1, Math.min(3, project.settings.candidates));
   let methods = PLAN_METHODS.slice(0, clamped);
 
-  const selected = project.settings.selectedPlan;
   if (selected !== null) {
     methods = methods.filter(([planId]) => planId === selected);
   }

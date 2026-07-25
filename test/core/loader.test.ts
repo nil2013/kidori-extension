@@ -19,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ProjectError } from "../../src/core/errors";
 import {
+  SUPPORTED_SCHEMA_VERSION,
   extractStockIds,
   loadProject,
   loadProjectFromRaw,
@@ -39,17 +40,20 @@ const BAR_LIMIT = BAR_LENGTH - 2 * EDGE_TRIM; // 1810
  * loadProject は ProjectError を送出する（意図した挙動）。
  */
 const SPECS_EXAMPLE_YAML = `\
-# yaml-language-server: $schema=./project.schema.json
-meta: { project: 書棚, units: mm, schemaVersion: "0.2" }
+# yaml-language-server: $schema=./kidori.schema.json
+meta: { project: 書棚, units: mm, schemaVersion: "0.3" }
 
 settings:
   kerf: 3            # 鋸刃厚（mm）
   edgeTrim: 5        # 木口の捨て代（mm）
   candidates: 3
+  rank: [cost, waste, cuts]   # 推奨案の評価優先順
+  exact: auto        # 小規模時は厳密探索（auto/on/off）
   selectedPlan: null
 
 stocks:
-  - { id: 1x4-6f,  label: "1×4材 6F",        kind: bar,   length: 1820, width: 89,  thickness: 19, price: 382 }
+  # preset: 補完確定時に挿入される規格材マスタの来歴キー（ビルドは読まない。§4b）
+  - { id: 1x4-6f,  preset: spf/1x4/6f, label: "1×4材 6F", kind: bar, length: 1820, width: 89, thickness: 19, price: 382 }
   - { id: pine-18, label: "パイン集成材18mm", kind: sheet, length: 1820, width: 910, thickness: 18, price: 6356 }
 
 parts:
@@ -68,7 +72,7 @@ parts:
 /** 物理的に整合する最小の正当プロジェクト（conftest.py の minimal_project 相当）。 */
 function minimalProject(): any {
   return {
-    meta: { project: "テスト棚", units: "mm", schemaVersion: "0.2" },
+    meta: { project: "テスト棚", units: "mm", schemaVersion: "0.3" },
     settings: {
       kerf: 3,
       edgeTrim: 5,
@@ -811,5 +815,64 @@ describe("v0.4: エラー時の警告保持", () => {
 
     expect(err.issues.some((i) => i.severity === "error")).toBe(true);
     expect(err.issues.some((i) => i.severity === "warning")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.6: stocks[].preset / schemaVersion
+// ---------------------------------------------------------------------------
+
+describe("v0.6: stocks[].preset", () => {
+  it("preset を受理して素通しする", () => {
+    const data = minimalProject();
+    data.stocks[0].preset = "spf/1x4/6f";
+
+    const { project, issues } = loadProjectFromRaw(data);
+
+    expect(issues).toEqual([]);
+    expect(project!.stocks[0].preset).toBe("spf/1x4/6f");
+  });
+
+  it("preset が無ければ undefined のまま（キーを増やさない）", () => {
+    const { project } = loadProjectFromRaw(minimalProject());
+    expect(project!.stocks[0].preset).toBeUndefined();
+  });
+
+  it("preset があっても実値フィールドは必須のまま（ビルドは preset を解決しない）", () => {
+    const data = minimalProject();
+    data.stocks[0].preset = "spf/1x4/6f";
+    delete data.stocks[0].length;
+
+    const { project, issues } = loadProjectFromRaw(data);
+
+    expect(project).toBeNull();
+    expect(issues.some((i) => i.path === "stocks[0]" && i.severity === "error")).toBe(
+      true,
+    );
+  });
+});
+
+describe("v0.6: SUPPORTED_SCHEMA_VERSION", () => {
+  it("想定バージョンは 0.3（SPECS.md v0.6）", () => {
+    expect(SUPPORTED_SCHEMA_VERSION).toBe("0.3");
+  });
+
+  it("0.3 は warning を出さない", () => {
+    const data = minimalProject();
+    data.meta.schemaVersion = "0.3";
+
+    const { issues } = loadProjectFromRaw(data);
+    expect(issues.some((i) => i.path === "meta.schemaVersion")).toBe(false);
+  });
+
+  it("旧版 0.2 の既存ファイルも warning のみでビルド可能（仕様自身の救済経路）", () => {
+    const data = minimalProject();
+    data.meta.schemaVersion = "0.2";
+
+    const { project, issues } = loadProjectFromRaw(data);
+
+    expect(project).not.toBeNull();
+    expect(issues.every((i) => i.severity === "warning")).toBe(true);
+    expect(issues.some((i) => i.path === "meta.schemaVersion")).toBe(true);
   });
 });
