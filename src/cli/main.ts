@@ -10,12 +10,16 @@
  *   kidori build  [<name>.kidori.yaml] [--out DIR] [--no-png] [--scale N]
  *   kidori watch  [<name>.kidori.yaml] [--out DIR] [--no-png] [--scale N]
  *   kidori select <A|B|C|X|null> [<name>.kidori.yaml]
+ *   kidori check  <name>.kidori.yaml
+ *   kidori schema <name>.kidori.yaml
  *
  * **CLI は非対話を貫く**（SPECS.md §3a の「プリセットから選べる」は `--preset` の
  * 反復指定で充足する）。AGENTS.md の読者であるコーディングエージェントにとっても
  * 非対話が正しい形であり、対話 UI は拡張層（Quick Pick）の責務。
  *
  * 終了コード: 0=成功, 1=検証エラー・実行時エラー, 2=引数エラー。
+ * ただし `check`（SPECS.md §3b）は診断の有無で 0/1 を分ける独自の規約を持つ
+ * （runCheck のコメント参照）。
  */
 
 import * as fs from "node:fs";
@@ -27,13 +31,17 @@ import { ProjectError } from "../core/errors";
 import { initDirectory } from "../core/init";
 import { KIDORI_SUFFIXES, defaultOutDir, hasKidoriSuffix } from "../core/kidorifile";
 import { createScaffold } from "../core/scaffold";
+import { runCheck, runSchema } from "./agentCommands";
+import { UsageError } from "./usageError";
 
 const USAGE = `使い方:
   kidori new    <ファイル名> [--preset <キー>]...      雛形ファイル1枚を生成（主経路）
   kidori init   [ディレクトリ] [--with-stocks]         ディレクトリを初期化（任意）
   kidori build  [<name>.kidori.yaml] [--out DIR] [--no-png] [--scale N]
   kidori watch  [<name>.kidori.yaml] [--out DIR] [--no-png] [--scale N]
-  kidori select <A|B|C|X|null> [<name>.kidori.yaml]`;
+  kidori select <A|B|C|X|null> [<name>.kidori.yaml]
+  kidori check  <name>.kidori.yaml                     構造化診断を JSON で出力（ビルドなし）
+  kidori schema <name>.kidori.yaml                     このファイル用の合成済みスキーマを stdout へ出力`;
 
 interface CliOptions {
   projectPath: string;
@@ -118,8 +126,6 @@ function parseOptions(args: string[]): CliOptions {
     pngScale,
   };
 }
-
-class UsageError extends Error {}
 
 function runBuild(options: CliOptions): number {
   try {
@@ -318,6 +324,10 @@ function main(): void {
       }
       const rest = parseOptions(argv.slice(2));
       process.exitCode = runSelect(planId, rest);
+    } else if (command === "check") {
+      process.exitCode = runCheck(argv.slice(1));
+    } else if (command === "schema") {
+      process.exitCode = runSchema(argv.slice(1));
     } else {
       console.error(USAGE);
       process.exitCode = command === undefined || command === "--help" ? 0 : 2;
