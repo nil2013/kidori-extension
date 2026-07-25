@@ -279,7 +279,7 @@ export class KidoriPreview {
       renderParts();
     } else if (msg.command === "error") {
       el("error").textContent =
-        "⚠ この表示は最新の正本を反映していません（直近のビルドが失敗しました）\n" + msg.message;
+        "⚠ この表示は最新の正本を反映していません（直近のビルドが失敗しました）\\n" + msg.message;
       el("error").hidden = false;
       document.body.classList.add("stale");
     }
