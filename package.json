@@ -2,7 +2,7 @@
   "name": "kidori",
   "displayName": "kidori",
   "description": "規格材の木取り図・加工指示図に特化した VS Code 拡張。正本 *.kidori.yaml から SVG/PNG を自動生成する。",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "publisher": "tnishimura",
   "license": "MIT",
   "private": true,
