@@ -13,7 +13,7 @@
  *     示しているが、雛形としては1組で足りる（2組目が要る場合は VS Code の
  *     行複製で足りる操作であり、雛形に固定して増やす理由がない）。
  *   - `parts[].qty` は書かない。assemblies を使う場合は省略でき、全 assembly の
- *     `contains` 合計から導出される（SPECS.md:81 `parts.qty` の説明、§4c の
+ *     `contains` 合計から導出される（SPECS.md:160 `parts[].qty` の説明、§4c の
  *     実例も qty を書いていない）。雛形が qty を書いてしまうと、後で
  *     `contains` の数値だけ変えたときに qty との食い違い warning を生みやすく、
  *     「1箇所を直せば揃う」という assemblies の利点を雛形自身が損なう。
