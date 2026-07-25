@@ -139,3 +139,67 @@ runSelect fix accepted (coupled to U2, correctness of changed behavior, not unso
 jsonValidation glob open risk CLOSED by implementer's実測 (glob compiler extraction, **/ normalization).
 Remaining known: kidori.new/init handlers unregistered (in progress — gate-relevant), README/examples, release.
 Checklist adds: 6. per-project failure state on preview switch. 7. verify command handlers registered before gate.
+
+## Consultation 6 — Layer-2 pre-flight (floor item 6, advisory only)
+Own verification: git log (7 commits as reported), status clean except .claude/logs; npx vitest run = 483/483
+(25 files) MY RUN; npx tsc --noEmit exit 0 MY RUN. Orphan sweep for project.yaml/project.schema.json/
+kidori.presets.json → only intentional deprecation notes remain. examples/ = bookshelf.kidori.yaml with
+commented-modeline + rationale, schemaVersion 0.3, preset keys cross-checked against builtin (pine/18mm/sabroku,
+spf/1x4/6f — both exist). AGENTS.template.md matches §3a 4 bullets, schema-reference-first. package.json:
+version 0.5.0, 5 commands, buildOnSave text updated. .gitignore *.out/ + documented do-not-ignore exceptions.
+preview empty-state string updated. checkModeline removed (no orphan). kidori.new: InputBox + canPickMany
+preset QuickPick; kidori.init: withStocks QuickPick (extension.ts:479-652, cdfec7f w/ newInitCommands.test 367L,
+staleReassert.test 142L — my Flag-A gap fix verified present).
+RECORD CORRECTION (own error): intake claim "repo convention commits vsix" was WRONG — git ls-files/-diff-filter=D
+show *.vsix never tracked; user decision 2 (generate-only) is self-standing and satisfied; disclose in report.
+Pre-flight verdict (ADVISORY, zero certification value): no blocking ヌケモレ found against step-1 reading.
+Gate-risk register: (1) §3a scaffold modeline letter (commented form always present; defense §4b 代替手段);
+(2) §4b JSON dynamic enum deferral (defense §4a positioning); both may FAIL under a literal judge → floor-5
+consult before acting, classify as spec-internal tension if hit. Reverse-probe exposure: deletion side clean
+(orphan sweep). Report-must-include list handed to Main (interpretations/deviations, known limits incl. out/
+deletion re-validation + old out/ dirs not auto-removed, unpushed state, vsix generated-not-committed,
+presets content still §8-provisional, bar-normalization attribution, my vsix-convention correction).
+Reminder to Main: full gate (fable judge, named explicitly) per intake assurance note; criteria agent opus;
+nothing Main/Supervisor-generated crosses the boundary (these notes included); verdict displayed in full;
+reverse probe mandatory; Supervisor pass ≠ certification.
+
+## FINAL FLUSH — engagement released after step-7 full-gate PASS (fable judge, verdict displayed per Main)
+Gate outcome as reported by Main: PASS, 55 criteria, 5 reverse probes (incl. mutation-probe on defaultOutDir and
+rot, vsix byte-identity vs judge's own rebuild), my 2 registered letter-risks did not FAIL; judge self-rejected
+over-derived criteria A1/A3. (Narration, not my evidence — but consistent with my own pre-flight measurements:
+483/483 vitest, tsc 0, orphan sweep clean.)
+
+### Triage validity (retrospective)
+HIGH calls all earned their consults: U1 (selector/gating/JSON), U3+U4 (cascade model, 2 implementation flags),
+U10 (jsonValidation design), U11 (produced the applySelection race find), U12 (produced no-self-heal invariant),
+U8/U9 (modeline tension). LOW calls held: U2 needed only the A-4 stem sub-question; U5 stocksFile stayed
+well-specified; no LOW unit re-triaged HIGH. Judgment-density model worked.
+
+### Advice that landed (per Main's closing attribution + my record)
+applySelection race; per-panel-stale/success-only-results gap; adoption-record non-update on mismatch
+(no self-heal); price exclusion from fingerprint; lengths/widths "format constraint ≠ supply constraint" split;
+layer-4 exclusion from insertion candidates; escape-layering test demand (mutation-verified); attribution
+correction (bar normalization = Main-originated); gate-risk register with floor-5 handling instructions.
+
+### My errors (for the record)
+1. Intake: claimed repo convention commits vsix — wrong (never tracked); corrected at pre-flight, disclosed.
+2. C-3 original field list lacked the bar-normalization class entirely (width and rot); implementer caught it.
+3. Early U1 blast-radius listed core as behaviorally name-coupled; actually strings/defaults only.
+
+### Residual risks for future sessions
+1. out/-deletion silently revalidates adoption (structural; README-documented).
+2. Scaffold modeline conditionality is a deliberate §3a-letter deviation — if user objects, revisit; interpretation logged.
+3. JSON dynamic stock-enum deferred to v2; custom-scheme TextDocumentContentProvider route remains unverified.
+4. Builtin preset content is §8-provisional (資材価格ログ表記整合 pending); keys now stable — renaming keys later
+   breaks materialized preset provenance in user files.
+5. bar fingerprint normalization presumes loader never validates bar part width; adding such validation requires
+   fingerprint revisit (fingerprint.ts header documents inputs).
+6. resolveCascade re-reads layers 2/3 per completion — perf watch item for large stocks.yaml (mtime cache is the fix).
+7. Webview inline-script escape class: preview.test.ts + staleReassert/previewProject tests are the barrier;
+   any html() string edit must keep double-escape discipline.
+8. main unpushed (push never requested); .claude/logs to be committed post-gate as docs(log).
+9. v2 preset divergence detection: linkage now exists (preset keys materialized incl. user-layer fallback keys) —
+   design hook intact; diagnostic-strength question remains §8-open.
+10. Respawn rule: any future Supervisor boots from instruction file + task list + this notes file only.
+
+Engagement closed. No further consultations.
