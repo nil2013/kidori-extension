@@ -33,8 +33,8 @@ Python・cairo 等の追加ランタイムは不要。PNG 変換は拡張内の 
 git clone <このリポジトリのURL> kidori-extension
 cd kidori-extension
 npm install
-npm run package        # dist/ をビルドして kidori-0.4.0.vsix を生成
-code --install-extension kidori-0.4.0.vsix
+npm run package        # dist/ をビルドして kidori-0.4.1.vsix を生成
+code --install-extension kidori-0.4.1.vsix
 ```
 
 注意: resvg-js はプラットフォーム別のネイティブバイナリを含むため、`.vsix` は生成したマシンと同じ OS/アーキテクチャでのみ PNG 出力が有効になる。PNG は確定要件のため、PNG 有効のまま resvg-js が利用できない環境ではビルドをエラーにする（旧図面が最新でないまま残るのを防ぐ）。その環境で図面だけ生成したい場合は PNG を無効化する（CLI: `--no-png`、拡張: 設定 `kidori.png.enabled: false`）。
