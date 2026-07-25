@@ -27,7 +27,7 @@
  *   6. 不変条件: 各チェーンの区間合計 == 全長。
  */
 
-import type { Part, Stock } from "../types";
+import type { Part, ResolvedMark, Stock } from "../types";
 import { effectiveWidth } from "../types";
 import { CoordTransform, Element, g, line, text } from "./svgdoc";
 
@@ -49,12 +49,35 @@ export const CHAR_WIDTH_RATIO = 0.62;
 // ---------------------------------------------------------------------------
 
 /**
+ * 非切削マーク（marks）由来の対象点を、部材面の内側に収まるものだけ追加する。
+ *
+ * SPECS.md §4c は marks の座標が部材面をはみ出す場合の扱いを規定していないため、
+ * 意味検証層も診断を出さない（描画側は忠実にはみ出して描く）。しかし寸法線側で
+ * 範囲外の点をそのまま拾うと、チェーンの両端が部材の 0/全長からずれ、
+ * 「全長寸法」が部材長でなくなる（本モジュール §6-6 の不変条件が破れる）。
+ * 図面の全長表記の正しさを優先し、範囲外の点は寸法チェーンから落とす。
+ */
+function pushMarkPoints(
+  target: number[],
+  candidates: readonly number[],
+  span: number,
+): void {
+  for (const value of candidates) {
+    if (value >= -DEDUPE_TOLERANCE && value <= span + DEDUPE_TOLERANCE) {
+      target.push(value);
+    }
+  }
+}
+
+/**
  * 部材の寸法チェーン対象点を軸ごとに抽出する（設計正本 §6-1）。
  *
  * - X軸: {0, part.length} ∪ {dir="across" の groove.pos} ∪ {hole.x}
  *   ∪ {dir="along" かつ end="stopped" の groove.from/to}
+ *   ∪ {mark の x, x+w/2, x+w}
  * - Y軸: {0, effectiveWidth(part, stock)} ∪ {dir="along" の groove.pos} ∪ {hole.y}
  *   ∪ {dir="across" かつ end="stopped" の groove.from/to}
+ *   ∪ {mark の y, y+h/2, y+h}
  *
  * 溝は幅方向・長さ方向とも中心（pos）を対象点とする。正本の pos 定義が
  * 溝中心であるため、手描き図面の 248/486/724 のような中心基準の表記と一致する。
@@ -63,14 +86,28 @@ export const CHAR_WIDTH_RATIO = 0.62;
  * 通し溝（end="through"）は走行方向端まで達するため、対象点は {0,L}/{0,W} で
  * 既に表現されており from/to は追加しない（そもそも through では from/to は null）。
  *
+ * marks（SPECS.md §4c「マークの端・中心はチェーン寸法線の対象に含める」）は
+ * 軸ごとに**端と中心の両方**、すなわち {x, x+w/2, x+w} / {y, y+h/2, y+h} を拾う。
+ * 「端・中心」は列挙であって選択ではない。
+ *
  * 戻り値は軸ごとに 0.01mm 許容差でデデュープ・昇順ソート済み（dedupeSorted 適用済み）。
  *
+ * @param marks この面に描く解決済みマーク（省略時は無し＝従来どおりの挙動）。
  * @returns [xs, ys]: X軸・Y軸それぞれの対象点リスト（mm、昇順・デデュープ済み）。
  */
-export function extractChainPoints(part: Part, stock: Stock): [number[], number[]] {
+export function extractChainPoints(
+  part: Part,
+  stock: Stock,
+  marks: readonly ResolvedMark[] = [],
+): [number[], number[]] {
   const width = effectiveWidth(part, stock);
   const xs: number[] = [0.0, part.length];
   const ys: number[] = [0.0, width];
+
+  for (const mark of marks) {
+    pushMarkPoints(xs, [mark.x, mark.x + mark.w / 2, mark.x + mark.w], part.length);
+    pushMarkPoints(ys, [mark.y, mark.y + mark.h / 2, mark.y + mark.h], width);
+  }
 
   for (const feature of part.features) {
     if (feature.type === "groove") {
@@ -375,6 +412,7 @@ export function renderAxisChain(
  * @param transform 部材ローカル座標 → SVG 座標の変換（localHeight は
  *     effectiveWidth(part, stock) と一致させること）。
  * @param style 描画スタイル。
+ * @param marks この面に描く解決済みマーク（SPECS.md §4c。省略時は無し）。
  * @returns X軸・Y軸のチェーン寸法をまとめた `<g>` 要素。
  */
 export function renderPartDimensions(
@@ -382,8 +420,9 @@ export function renderPartDimensions(
   stock: Stock,
   transform: CoordTransform,
   style: DimensionStyle = DEFAULT_DIMENSION_STYLE,
+  marks: readonly ResolvedMark[] = [],
 ): Element {
-  const [xs, ys] = extractChainPoints(part, stock);
+  const [xs, ys] = extractChainPoints(part, stock, marks);
   const group = g();
   group.children.push(renderOneAxis(xs, transform, "x", style));
   group.children.push(renderOneAxis(ys, transform, "y", style));

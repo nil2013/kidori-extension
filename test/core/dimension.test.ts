@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { Groove, Hole, Part, Stock } from "../../src/core/types";
+import type { Groove, Hole, Part, ResolvedMark, Stock } from "../../src/core/types";
 import {
   ChainSegment,
   DimensionStyle,
@@ -334,6 +334,81 @@ describe("extractChainPoints", () => {
     expect(xs).toEqual([0.0, 248.0, 1985.0]);
     // 走行方向（Y軸）は {0, W} のみ。
     expect(ys).toEqual([0.0, 200.0]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 非切削マーク（marks）由来の対象点（SPECS.md §4c:215）
+// ---------------------------------------------------------------------------
+
+function makeMark(overrides: Partial<ResolvedMark> = {}): ResolvedMark {
+  return {
+    on: "beam-top",
+    face: "front",
+    x: 50,
+    y: 0,
+    w: 38,
+    h: 89,
+    ref: null,
+    note: null,
+    ...overrides,
+  };
+}
+
+describe("extractChainPoints（marks）", () => {
+  it("マークの端と中心の両方 {x, x+w/2, x+w} / {y, y+h/2, y+h} を拾う", () => {
+    const stock = makeSheetStock();
+    const part = makePart({ length: 1000, width: 200, features: [] });
+    const mark = makeMark({ x: 100, y: 20, w: 40, h: 60 });
+    const [xs, ys] = extractChainPoints(part, stock, [mark]);
+    // X軸: {0, 1000} ∪ {100, 120, 140}
+    expect(xs).toEqual([0.0, 100.0, 120.0, 140.0, 1000.0]);
+    // Y軸: {0, 200} ∪ {20, 50, 80}
+    expect(ys).toEqual([0.0, 20.0, 50.0, 80.0, 200.0]);
+  });
+
+  it("第3引数を省略すると従来の抽出結果と完全に一致する", () => {
+    const stock = makeSheetStock();
+    const features = [makeGroove({ dir: "across", pos: 248 }), makeHole()];
+    const part = makePart({ length: 1985, width: 400, features });
+    expect(extractChainPoints(part, stock)).toEqual(
+      extractChainPoints(part, stock, []),
+    );
+  });
+
+  it("マークが部材端に接する場合、端点とデデュープされて重複しない", () => {
+    const stock = makeSheetStock();
+    const part = makePart({ length: 1000, width: 100, features: [] });
+    // y=0・h=100 は部材面の全高に一致する（ウマの足当たり面の典型）。
+    const mark = makeMark({ x: 0, y: 0, w: 200, h: 100 });
+    const [xs, ys] = extractChainPoints(part, stock, [mark]);
+    expect(xs).toEqual([0.0, 100.0, 200.0, 1000.0]);
+    expect(ys).toEqual([0.0, 50.0, 100.0]);
+  });
+
+  it("部材面をはみ出すマークの点は寸法チェーンに入れない（全長寸法を守る）", () => {
+    const stock = makeSheetStock();
+    const part = makePart({ length: 1000, width: 200, features: [] });
+    // x=960 / w=100 → 右端 1060 は部材長 1000 を超える。中心 1010 も範囲外。
+    const mark = makeMark({ x: 960, y: -10, w: 100, h: 40 });
+    const [xs, ys] = extractChainPoints(part, stock, [mark]);
+    // 範囲内の 960 だけが残り、両端は {0, 1000} のまま。
+    expect(xs).toEqual([0.0, 960.0, 1000.0]);
+    expect(xs[0]).toBe(0.0);
+    expect(xs[xs.length - 1]).toBe(part.length);
+    // Y軸: -10 は範囲外、中心 10 と上端 30 は範囲内。
+    expect(ys).toEqual([0.0, 10.0, 30.0, 200.0]);
+  });
+
+  it("複数マークの点をすべて拾う", () => {
+    const stock = makeSheetStock();
+    const part = makePart({ length: 1000, width: 200, features: [] });
+    const marks = [
+      makeMark({ x: 100, y: 0, w: 40, h: 200 }),
+      makeMark({ x: 800, y: 0, w: 40, h: 200 }),
+    ];
+    const [xs] = extractChainPoints(part, stock, marks);
+    expect(xs).toEqual([0.0, 100.0, 120.0, 140.0, 800.0, 820.0, 840.0, 1000.0]);
   });
 });
 

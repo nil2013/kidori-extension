@@ -12,14 +12,24 @@
  *   ⑤ metrics（summarize / rankPlans / buildSummary）— 推奨案★の決定
  *   ⑥ plan-X.svg + parts/*.svg（Phase 1: 全てメモリ上に用意）
  *   ⑦ PNG（resvg-js。PNG 有効かつ利用不可なら KidoriError。S-09）
- *   ⑧ summary.json（generatedAt は build 時刻の ISO 文字列。正本ハッシュ付き）
- *   ⑨ Phase 2: tmp+rename でアトミックにコミット。summary.json を最後に書く
- *   ⑩ 管理対象パターン（plan-*.svg/png, parts/*.svg/png, summary.json）の
- *      陳腐化ファイル削除（管理外ファイルには触れない）＋失敗マーカー除去
+ *   ⑧ schema.json（合成済みスキーマ。SPECS.md §3b:101・§6:247）
+ *   ⑨ summary.json（generatedAt は build 時刻の ISO 文字列。正本ハッシュ付き）
+ *   ⑩ Phase 2: tmp+rename でアトミックにコミット。summary.json を最後に書く
+ *   ⑪ 管理対象パターン（plan-*.svg/png, parts/*.svg/png, schema.json,
+ *      summary.json）の陳腐化ファイル削除（管理外ファイルには触れない）
+ *      ＋失敗マーカー除去
  *
  * 出力先は `<正本のディレクトリ>/<stem>.out/`（SPECS.md §3。`defaultOutDir`）。
- * スキーマファイルのディスク再生成は v0.6 で廃止された（§4b）。基底スキーマの
- * 書き出しは `kidori init` の仕事であり、`schema.ts` の `writeBaseSchema` が担う。
+ *
+ * スキーマ書き出しの2つの区別（混同しやすいので明記する）:
+ *   - **正本ディレクトリへの再生成は v0.6 で廃止**（§4b）。編集中ファイルの隣に
+ *     `<stem>.schema.json` を吐く経路はもう無い。古い合成済みスキーマが正本の
+ *     そばに残って誤情報源になるのを防ぐための廃止だった。
+ *   - **出力ディレクトリへの書き出しは v0.7 で追加**（§3b:101）。`<stem>.out/` は
+ *     毎ビルド再生成され `.gitignore` 対象なので、廃止理由の事故は起きない。
+ *     両者は両立する。
+ *   - 基底スキーマ（動的 enum なし）の書き出しは `kidori init` の仕事であり、
+ *     `schema.ts` の `writeBaseSchema` が担う（§3a）。
  *
  * `<stem>.out/` の現行正本反映保証（S-11 / S-12）:
  *   - build() 全体を try/catch し、例外時は BUILD-FAILED.txt を書いて rethrow。
@@ -32,8 +42,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 
+import { composeSchemaJson } from "./composeSchema";
 import { Issue, KidoriError, ProjectError } from "./errors";
-import { loadProject } from "./loader";
+import { loadProject, readRaw } from "./loader";
+import { MarkVariant, collectMarkVariants } from "./marks";
 import { MODELINE_PREFIX, BASE_SCHEMA_FILENAME, defaultOutDir } from "./kidorifile";
 import { AdoptionRecord, layoutFingerprint } from "./fingerprint";
 import { generatePlans } from "./packing";
@@ -49,9 +61,9 @@ import {
   summarize,
 } from "./metrics";
 import { renderCutplan } from "./render/cutplan";
-import { renderPartcard } from "./render/partcard";
+import { PartcardAssembly, renderPartcard } from "./render/partcard";
 import { pngAvailable, svgToPngBuffer } from "./png";
-import type { Project, RankKey } from "./types";
+import type { Part, Project, RankKey, ResolvedMark } from "./types";
 
 /** 出力先に書き込む前の成果物（name は outDir 相対、区切りは "/"）。 */
 interface Artifact {
@@ -64,6 +76,14 @@ const FAILURE_MARKER = "BUILD-FAILED.txt";
 
 /** summary.json のファイル名（前回の adopted 記録の読み出しにも使う）。 */
 const SUMMARY_FILENAME = "summary.json";
+
+/**
+ * 合成済みスキーマの書き出し先ファイル名（SPECS.md §3b:101・§6:247）。
+ *
+ * 正本ディレクトリではなく `<ファイル名>.out/` の直下に置く派生物であり、
+ * ビルドのたびに再生成される。`kidori schema <ファイル>` の stdout と同一内容。
+ */
+const SCHEMA_FILENAME = "schema.json";
 
 export interface BuildOptions {
   /**
@@ -89,6 +109,8 @@ export interface BuildResult {
   /** 生成した PNG のパス一覧（resvg-js 利用不可の場合は空）。 */
   pngPaths: string[];
   summaryPath: string;
+  /** 合成済みスキーマ `<出力先>/schema.json` のパス（SPECS.md §3b:101）。 */
+  schemaPath: string;
   /** loadProject が返した警告 Issue 一覧。 */
   warnings: Issue[];
   pngEnabled: boolean;
@@ -212,11 +234,20 @@ function writeArtifactAtomic(outDir: string, art: Artifact): void {
   fs.renameSync(tmp, target);
 }
 
+/**
+ * 管理対象パターンのうち今回生成しなかったものを削除する（管理外ファイルは触らない）。
+ *
+ * @param managedOther SVG/PNG 以外の管理対象ファイル名（outDir 直下）。`schema.json` は
+ *     常に生成されるためここに常に載るが、管理対象の台帳に載せておくことで
+ *     「生成をやめた瞬間に前回の残骸が誤情報源として残る」経路を塞ぐ
+ *     （SPECS.md §3b:101 が古い合成済みスキーマの残骸を排除した趣旨）。
+ */
 function cleanupStale(
   outDir: string,
   partsDir: string,
   managedSvg: Set<string>,
   managedPng: Set<string>,
+  managedOther: Set<string>,
 ): void {
   if (fs.existsSync(outDir)) {
     for (const name of fs.readdirSync(outDir)) {
@@ -224,6 +255,9 @@ function cleanupStale(
         fs.unlinkSync(path.join(outDir, name));
       }
       if (/^plan-.*\.png$/.test(name) && !managedPng.has(name)) {
+        fs.unlinkSync(path.join(outDir, name));
+      }
+      if (name === SCHEMA_FILENAME && !managedOther.has(name)) {
         fs.unlinkSync(path.join(outDir, name));
       }
     }
@@ -386,6 +420,72 @@ function generateAllPlans(
       reason: exact.reason,
     },
   };
+}
+
+/** 加工指示図1面ぶんの生成指示（基底面 または assembly 変種面）。 */
+export interface PartFace {
+  /** 出力ファイル名の stem。基底面は `<形状id>`、変種面は `<assembly>-<形状id>`。 */
+  stem: string;
+  /** 描画対象の形状。 */
+  part: Part;
+  /** この面に描くマーク（基底面は常に空）。 */
+  marks: ResolvedMark[];
+  /** 変種面のときの構成識別情報（基底面は null）。 */
+  assembly: PartcardAssembly | null;
+}
+
+/**
+ * 出力する加工指示図の面一覧を決める（SPECS.md §4c:217）。
+ *
+ * 規則:
+ *   - **変種面**: マークを持つ (assembly, 形状) 組ごとに1面
+ *     （`parts/<assembly>-<形状id>.svg`）。`collectMarkVariants` の判定に従う。
+ *     マーク内容の同値判定はしない —— 同値なら1面に畳む方式にすると、1mm の
+ *     編集で出力ファイル名の集合が変わる不安定な出力になる。
+ *   - **基底面**: その形状の unit のうち、マーク付き assembly に属さないものが
+ *     1つでも存在する場合に出力する（`parts/<形状id>.svg`）。
+ *     SPECS.md:217「マークを持たない形状は従来どおり形状ごとに1面」を、
+ *     マークが一部の構成にしか付かない場合へ単調に拡張したもの。この条件が
+ *     無いと、マーク無し assembly に属する unit が図面を持たない穴が生じる。
+ *     全 unit がマーク付き assembly に属するなら基底面は出さない。
+ *
+ * 並びは `project.parts` の宣言順で、各形状につき「基底面 → 変種面（assemblies の
+ * 宣言順）」とする。
+ */
+export function planPartFaces(project: Project): PartFace[] {
+  const variantsByPart = new Map<string, MarkVariant[]>();
+  for (const variant of collectMarkVariants(project)) {
+    const list = variantsByPart.get(variant.part.id) ?? [];
+    list.push(variant);
+    variantsByPart.set(variant.part.id, list);
+  }
+
+  const faces: PartFace[] = [];
+  for (const part of project.parts) {
+    const variants = variantsByPart.get(part.id) ?? [];
+    // マーク付き assembly に属する unit の数（contains の合計）。
+    const markedUnits = variants.reduce(
+      (sum, v) => sum + (v.assembly.contains[part.id] ?? 0),
+      0,
+    );
+    // マークが1つも無い形状は従来どおり無条件に1面（qty の値に依存させない）。
+    if (variants.length === 0 || part.qty - markedUnits > 0) {
+      faces.push({ stem: part.id, part, marks: [], assembly: null });
+    }
+    for (const variant of variants) {
+      faces.push({
+        stem: variant.stem,
+        part,
+        marks: variant.marks,
+        assembly: {
+          id: variant.assembly.id,
+          label: variant.assembly.label,
+          qty: variant.assembly.contains[part.id] ?? 0,
+        },
+      });
+    }
+  }
+  return faces;
 }
 
 /** 前回ビルドの summary.json から読み出した、今回のビルドに効く情報。 */
@@ -712,9 +812,12 @@ function buildInner(
     }
   }
 
+  // 面の集合は marks の有無で変わるが、割付（plans / summaries）はここより前で
+  // 確定済みであり、marks は一切参照されていない（SPECS.md §4c:216）。
   const stocksById = new Map(project.stocks.map((s) => [s.id, s]));
   const partCards: { id: string; label: string; svgPath: string }[] = [];
-  for (const part of project.parts) {
+  for (const face of planPartFaces(project)) {
+    const part = face.part;
     const stock = stocksById.get(part.stock);
     if (!stock) {
       continue; // 意味検証層で既に error のはずだが防御的にスキップ。
@@ -724,27 +827,41 @@ function buildInner(
     const svgText = renderPartcard(part, stock, {
       seqLabels,
       planId: selectedPlanId,
+      marks: face.marks,
+      assembly: face.assembly,
     });
-    // safeChildPath で part.id に不正な区切りが無いことを Phase 1 中に検証する。
-    const svgAbs = safeChildPath(partsDir, `${part.id}.svg`);
-    const svgName = `parts/${part.id}.svg`;
+    // safeChildPath で stem に不正な区切りが無いことを Phase 1 中に検証する。
+    const svgAbs = safeChildPath(partsDir, `${face.stem}.svg`);
+    const svgName = `parts/${face.stem}.svg`;
     artifacts.push({ name: svgName, data: svgText });
     managedSvg.add(svgName);
     svgPaths.push(svgAbs);
-    partCards.push({ id: part.id, label: part.label, svgPath: svgAbs });
+    partCards.push({ id: face.stem, label: part.label, svgPath: svgAbs });
 
     if (png) {
       const buf = svgToPngBuffer(svgText, pngScale);
       if (buf !== null) {
-        const pngAbs = safeChildPath(partsDir, `${part.id}.png`);
-        artifacts.push({ name: `parts/${part.id}.png`, data: buf });
-        managedPng.add(`parts/${part.id}.png`);
+        const pngAbs = safeChildPath(partsDir, `${face.stem}.png`);
+        artifacts.push({ name: `parts/${face.stem}.png`, data: buf });
+        managedPng.add(`parts/${face.stem}.png`);
         pngPaths.push(pngAbs);
       }
     }
   }
 
-  // ⑧ summary.json（コミット記録として最後に確定する）。
+  // ⑧ schema.json（SPECS.md §3b:101）。`kidori schema` と同じ composeSchemaJson を
+  // 通すため、stdout と本ファイルの内容は定義上一致する。loadProject が既に成功
+  // している以上ここでの再パースは失敗しない（loadProject は raw を返さないため
+  // 読み直す。core の公開 API を増やすより、この2回読みを受け入れる）。
+  const managedOther = new Set<string>([SCHEMA_FILENAME]);
+  artifacts.push({
+    name: SCHEMA_FILENAME,
+    // schemaJson は末尾改行付きの文字列を返すため、ここでは足さない。
+    data: composeSchemaJson(readRaw(projectPath), path.dirname(projectPath)),
+  });
+  const schemaPath = path.join(outDir, SCHEMA_FILENAME);
+
+  // ⑨ summary.json（コミット記録として最後に確定する）。
   const summaryName = SUMMARY_FILENAME;
   const summaryPath = path.join(outDir, summaryName);
   const summaryData = JSON.stringify(summary, null, 2) + "\n";
@@ -761,10 +878,10 @@ function buildInner(
   }
   writeArtifactAtomic(outDir, { name: summaryName, data: summaryData });
 
-  // ⑨ 陳腐化ファイル削除。
-  cleanupStale(outDir, partsDir, managedSvg, managedPng);
+  // ⑪ 陳腐化ファイル削除。
+  cleanupStale(outDir, partsDir, managedSvg, managedPng, managedOther);
 
-  // ⑩ 成功コミットの最終ステップ: 失敗マーカーを除去する。
+  // 成功コミットの最終ステップ: 失敗マーカーを除去する。
   fs.rmSync(path.join(outDir, FAILURE_MARKER), { force: true });
 
   return {
@@ -775,6 +892,7 @@ function buildInner(
     svgPaths,
     pngPaths,
     summaryPath,
+    schemaPath,
     warnings,
     pngEnabled: png,
     summary,

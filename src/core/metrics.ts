@@ -110,6 +110,35 @@ export interface ExactInfo {
   reason: string | null;
 }
 
+/** summary.json の assemblies[] の部材内訳1件（形状 × その構成での個数）。 */
+export interface AssemblyPartOut {
+  /** 形状 id（parts[].id）。plans[].stocks[].units[].placements[].part と同じ語彙。 */
+  part: string;
+  /** 形状の表示ラベル（parts[].label）。 */
+  label: string;
+  /** この構成でのこの形状の個数（assemblies[].contains の値）。 */
+  qty: number;
+}
+
+/**
+ * summary.json の assemblies[] 1要素（SPECS.md §4c:212・§6:246
+ * 「assembly 単位の部材内訳」）。
+ *
+ * 割付結果ではなく**構成の宣言**の機械可読な写しである。割付は導出後の合計数
+ * しか見ないため（SPECS.md §4c:211）、ここに書かれる個数は plans[] のどの数値とも
+ * 直接は対応しない（Σ assemblies[].parts[].qty == parts[].qty は成り立つ）。
+ */
+export interface AssemblyOut {
+  /** 構成 ID（assemblies[].id）。変種面 `parts/<id>-<形状id>.svg` の接頭辞でもある。 */
+  id: string;
+  /** 表示ラベル。省略時は null。 */
+  label: string | null;
+  /** 部材内訳。並びは parts[] の宣言順（contains のキー順ではない）。 */
+  parts: AssemblyPartOut[];
+  /** この構成が持つ非切削マーク（marks）の件数。0 なら変種面は出力されない。 */
+  markCount: number;
+}
+
 /** summary.json のトップレベル。 */
 export interface Summary {
   schemaVersion: string;
@@ -147,6 +176,18 @@ export interface Summary {
   /** rank 順に並べた案 ID の一覧。 */
   rankedPlans: string[];
   exact: ExactInfo;
+  /**
+   * assembly 単位の部材内訳（SPECS.md §6:246「`assemblies` 使用時は assembly 単位の
+   * 部材内訳を含む」）。
+   *
+   * **`assemblies` 区画が無い正本では、このキー自体を出力しない**（空配列も出さない）。
+   * 理由は2つ:
+   *   1. SPECS の文言が「使用時は含む」という条件付き記述であり、非使用時に何かを
+   *      出すことを求めていない。
+   *   2. 既存正本の summary.json をバイト単位で不変に保てる（v0.7 追加分による
+   *      回帰の余地を構造的に消せる）。
+   */
+  assemblies?: AssemblyOut[];
   plans: PlanSummary[];
 }
 
@@ -488,6 +529,28 @@ export function rankPlans(
  * @param adopted 採用案の記録（SPECS.md §5）。未採用時は null。
  * @param selectedPlanStale 採用案が設計変更で無効化されているか。
  */
+/**
+ * assembly 単位の部材内訳を組み立てる（SPECS.md §4c:212）。
+ *
+ * 部材の並びは `contains` のキー順ではなく `project.parts` の宣言順にする
+ * （YAML マップのキー順に依存させると、意味の変わらない編集で summary.json の
+ * 差分が動く）。`contains` に載っていない形状はその構成には現れない。
+ */
+export function buildAssemblyBreakdown(project: Project): AssemblyOut[] {
+  return project.assemblies.map((assembly) => ({
+    id: assembly.id,
+    label: assembly.label,
+    parts: project.parts
+      .filter((part) => typeof assembly.contains[part.id] === "number")
+      .map((part) => ({
+        part: part.id,
+        label: part.label,
+        qty: assembly.contains[part.id],
+      })),
+    markCount: assembly.marks.length,
+  }));
+}
+
 export function buildSummary(
   plansSummaries: PlanSummary[],
   project: Project,
@@ -499,6 +562,11 @@ export function buildSummary(
   adopted: AdoptionRecord | null = null,
   selectedPlanStale = false,
 ): Summary {
+  // assemblies 不在時はキーごと出さない（Summary.assemblies の doc comment 参照）。
+  const assemblies =
+    project.assemblies.length > 0
+      ? { assemblies: buildAssemblyBreakdown(project) }
+      : {};
   return {
     schemaVersion: project.meta.schemaVersion,
     generatedAt,
@@ -512,6 +580,7 @@ export function buildSummary(
     recommendedPlan: rankedPlans.length > 0 ? rankedPlans[0] : null,
     rankedPlans,
     exact,
+    ...assemblies,
     plans: plansSummaries,
   };
 }

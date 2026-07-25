@@ -8,7 +8,7 @@
  * （本モジュールは寸法線の計算ロジックを持たない）。
  */
 
-import type { Groove, Hole, Part, Stock } from "../types";
+import type { Groove, Hole, Part, ResolvedMark, Stock } from "../types";
 import { effectiveWidth } from "../types";
 import { circledNumber } from "./cutplan";
 import {
@@ -22,8 +22,10 @@ import {
   Element,
   SvgDocument,
   circle,
+  defs,
   g,
   line,
+  pattern,
   rect,
   text,
 } from "./svgdoc";
@@ -43,6 +45,22 @@ const STROKE_WIDTH = 1.2;
 const GROOVE_FRONT_FILL = "#f4c98a";
 const GROOVE_FRONT_OPACITY = 0.55;
 const FEATURE_STROKE = "#333333";
+
+/**
+ * 非切削マーク（取り付けシロ。SPECS.md §4c）の描画定数。
+ *
+ * SPECS.md §8 は「破線かハッチングか」を未確定事項として残しているが、
+ * 破線での領域塗りは採らない: `renderGroove`/`renderHole` の `stroke-dasharray`
+ * は既に「裏面の隠れ線」の意味を占有しており、マークを破線領域にすると
+ * 裏面加工と視覚的に衝突する。よって領域は**ハッチング**（`<defs>` の斜線
+ * パターン）で示し、境界線だけを面規約（front=実線 / back=破線）に載せる。
+ * 色は切削フィーチャ（#333333）と混同しない青灰色を既定値とする。
+ */
+const MARK_HATCH_ID = "kidori-mark-hatch";
+const MARK_STROKE = "#4a7ba7";
+const MARK_STROKE_WIDTH = 0.8;
+/** SPECS.md §6「取り付け位置（切削なし）」の固定文言。 */
+const MARK_NOTE_PREFIX = "取り付け位置（切削なし）";
 
 const HEADER_TOP_PAD = 8.0;
 const HEADER_LINE_HEIGHT = 16.0;
@@ -77,12 +95,20 @@ function buildHeaderLines(
   stock: Stock,
   seqLabels: number[] | null,
   planId: string | null,
+  assembly: PartcardAssembly | null,
 ): string[] {
   const width = effectiveWidth(part, stock);
   const line1 =
     `${part.id}（${part.label}）｜qty ${part.qty}｜` +
     `原材: ${stock.id} (t${fmt(stock.thickness)})｜${fmt(part.length)} × ${fmt(width)}`;
   const lines = [line1];
+  if (assembly !== null) {
+    const name =
+      assembly.label !== null && assembly.label !== ""
+        ? `${assembly.id}（${assembly.label}）`
+        : assembly.id;
+    lines.push(`構成: ${name}｜この構成での使用数 ${assembly.qty}`);
+  }
   if (seqLabels && seqLabels.length > 0) {
     const labels = seqLabels.map((n) => circledNumber(n)).join("");
     lines.push(`配置: 案${planId} ${labels}`);
@@ -323,8 +349,93 @@ function renderHole(
 }
 
 // ---------------------------------------------------------------------------
+// 非切削マーク（取り付けシロ。SPECS.md §4c・§6）
+// ---------------------------------------------------------------------------
+
+/** マーク領域を塗るハッチングパターンの `<defs>`（marks がある面にだけ足す）。 */
+function markDefs(): Element {
+  const hatch = pattern(
+    MARK_HATCH_ID,
+    6,
+    6,
+    [line(0, 0, 0, 6, { stroke: MARK_STROKE, stroke_width: 1 })],
+    {
+      patternUnits: "userSpaceOnUse",
+      patternTransform: "rotate(45)",
+    },
+  );
+  return defs([hatch]);
+}
+
+/**
+ * マークの注記文言を組み立てる。
+ *
+ * SPECS.md §6 の固定文言「取り付け位置（切削なし）」に、ユーザーの `note` が
+ * あれば併記し、末尾に加工面（溝・丸穴と同じ `faceLabel` 表記）を付ける。
+ */
+export function markNote(mark: ResolvedMark): string {
+  const body = mark.note !== null && mark.note !== "" ? ` ${mark.note}` : "";
+  return `${MARK_NOTE_PREFIX}${body}${faceLabel(mark.face)}`;
+}
+
+/**
+ * マーク1件を描画する（領域ハッチング＋境界線＋注記）。
+ *
+ * 座標は `mark.x`/`mark.y` が**領域の左下角**（部材ローカル原点側の角）である
+ * ことを前提とする（`hole` の x/y が中心基準なのと意味が異なる。SPECS.md §4c）。
+ * 部材面をはみ出す領域も忠実にそのまま描く（意味検証層は診断を出さない）。
+ */
+function renderMark(
+  mark: ResolvedMark,
+  transform: CoordTransform,
+  placedBoxes: BBox[],
+  rightListX: number,
+  rightListY: number,
+): [Element[], number] {
+  const [mx, my, mw, mh] = transform.rect(mark.x, mark.y, mark.w, mark.h);
+
+  const shape = rect(mx, my, mw, mh, {
+    fill: `url(#${MARK_HATCH_ID})`,
+    stroke: MARK_STROKE,
+    stroke_width: MARK_STROKE_WIDTH,
+    // 面規約: front は実線、back は隠れ線と同じ破線。
+    stroke_dasharray: mark.face === "front" ? null : "5,3",
+    data_role: "mark",
+    data_face: mark.face,
+  });
+
+  const anchorX = mx + mw / 2.0;
+  const anchorY = my;
+  const [annElements, newRightListY] = placeAnnotation(
+    markNote(mark),
+    anchorX,
+    anchorY,
+    placedBoxes,
+    rightListX,
+    rightListY,
+  );
+  return [[shape, ...annElements], newRightListY];
+}
+
+// ---------------------------------------------------------------------------
 // 公開エントリ
 // ---------------------------------------------------------------------------
+
+/**
+ * 変種面（`parts/<assembly>-<形状id>.svg`）のヘッダに出す構成の識別情報。
+ *
+ * 変種面は同一形状・同一寸法のため、図の見た目だけでは互い違いに噛み合う
+ * ウマ2脚のような組を取り違えうる。印刷して現場に持ち出す前提（SPECS.md §6）
+ * では、どの構成の面かがその紙の上で読めなければならない。
+ */
+export interface PartcardAssembly {
+  /** 構成 ID（assemblies[].id）。 */
+  id: string;
+  /** 表示ラベル（assemblies[].label）。無ければ null。 */
+  label: string | null;
+  /** この構成でのこの形状の使用数（contains の値）。 */
+  qty: number;
+}
 
 /**
  * 1部材定義を1つの加工指示図 SVG 文書として描画する（設計正本 §6）。
@@ -335,17 +446,29 @@ function renderHole(
  *     この部材の全インスタンスの配置番号（Plan.seq 由来）リスト。
  *     null / 未指定の場合、ヘッダに配置番号行を出さない。
  * @param options.planId seqLabels 指定時に併記する採用案 ID（例: "A"）。
+ * @param options.marks 解決済みの非切削マーク（SPECS.md §4c）。変種面のときのみ渡す。
+ *     `Part` を派生させて渡す方式は採らない —— `metrics`/`packing` が受け取るのは
+ *     `Part` のままであり、marks が割付エンジンから構造的に見えないこと自体が
+ *     SPECS.md §4c「割付エンジンには一切影響しない」の担保になる。
+ * @param options.assembly 変種面のときの構成識別情報（ヘッダに出す）。
  * @returns SVG 文字列。
  */
 export function renderPartcard(
   part: Part,
   stock: Stock,
-  options?: { seqLabels?: number[] | null; planId?: string | null },
+  options?: {
+    seqLabels?: number[] | null;
+    planId?: string | null;
+    marks?: readonly ResolvedMark[] | null;
+    assembly?: PartcardAssembly | null;
+  },
 ): string {
   const seqLabels = options?.seqLabels ?? null;
   const planId = options?.planId ?? null;
+  const marks = options?.marks ?? [];
+  const assembly = options?.assembly ?? null;
 
-  const headerLines = buildHeaderLines(part, stock, seqLabels, planId);
+  const headerLines = buildHeaderLines(part, stock, seqLabels, planId, assembly);
   const topMargin =
     HEADER_TOP_PAD + headerLines.length * HEADER_LINE_HEIGHT + HEADER_BOTTOM_PAD;
 
@@ -404,9 +527,28 @@ export function renderPartcard(
     elements.push(...featureElements);
   }
 
-  elements.push(renderPartDimensions(part, stock, transform, DEFAULT_DIMENSION_STYLE));
+  // 非切削マークは切削フィーチャの後に重ねる（正本の記述順を保つ）。
+  for (const mark of marks) {
+    let markElements: Element[];
+    [markElements, rightListY] = renderMark(
+      mark,
+      transform,
+      placedBoxes,
+      rightListX,
+      rightListY,
+    );
+    elements.push(...markElements);
+  }
+
+  elements.push(
+    renderPartDimensions(part, stock, transform, DEFAULT_DIMENSION_STYLE, marks),
+  );
 
   const doc = new SvgDocument(docWidth, docHeight);
+  // marks が無い面には defs を足さない（従来出力とバイト単位で一致させる）。
+  if (marks.length > 0) {
+    doc.add(markDefs());
+  }
   for (let i = 0; i < headerLines.length; i++) {
     doc.add(
       text(10.0, HEADER_TOP_PAD + (i + 1) * HEADER_LINE_HEIGHT, headerLines[i], {

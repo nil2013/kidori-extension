@@ -25,6 +25,7 @@ import type {
   Meta,
   Part,
   Project,
+  ResolvedMark,
   Settings,
   Stock,
 } from "../../src/core/types";
@@ -671,6 +672,173 @@ describe("renderPartcard", () => {
     const annotations = findByRole(root, "annotation", "text").map((el) => el.textContent);
     expect(annotations.some((t) => t.includes("Φ4") && t.includes("（表面）"))).toBe(true);
     expect(annotations.some((t) => t.includes("Φ6") && t.includes("（裏面）"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderPartcard: 非切削マーク（取り付けシロ。SPECS.md §4c・§6）
+// ---------------------------------------------------------------------------
+
+function makeMarkedPart(): [Part, Stock] {
+  const stock: Stock = {
+    id: "2x4-6f",
+    label: "2×4材 6F",
+    kind: "bar",
+    length: 1820,
+    width: 89,
+    thickness: 38,
+    price: 498,
+  };
+  const part: Part = {
+    id: "beam-top",
+    label: "天板",
+    qty: 2,
+    stock: "2x4-6f",
+    length: 850,
+    width: null,
+    rot: false,
+    features: [],
+  };
+  return [part, stock];
+}
+
+function makeMark(overrides: Partial<ResolvedMark> = {}): ResolvedMark {
+  return {
+    on: "beam-top",
+    face: "front",
+    x: 50,
+    y: 0,
+    w: 38,
+    h: 89,
+    ref: "leg",
+    note: "足当たり面",
+    ...overrides,
+  };
+}
+
+/** 要素ツリーを深さ優先で走査し、条件に一致するノードを集める。 */
+function findAll(node: XmlNode, predicate: (n: XmlNode) => boolean): XmlNode[] {
+  const found: XmlNode[] = [];
+  const walk = (n: XmlNode): void => {
+    if (predicate(n)) found.push(n);
+    n.children.forEach(walk);
+  };
+  walk(node);
+  return found;
+}
+
+describe("renderPartcard（marks）", () => {
+  it("マーク領域がハッチングパターンで塗られ、注記に固定文言が入る", () => {
+    const [part, stock] = makeMarkedPart();
+    const svgText = renderPartcard(part, stock, { marks: [makeMark()] });
+    const root = parseXml(svgText);
+
+    const marks = findByRole(root, "mark", "rect");
+    expect(marks).toHaveLength(1);
+
+    // D2: 領域はハッチング（defs の pattern を fill で参照する）。
+    const fill = marks[0].attrs["fill"] ?? "";
+    expect(fill).toMatch(/^url\(#.+\)$/);
+    const patternId = /^url\(#(.+)\)$/.exec(fill)![1];
+    const patterns = findAll(root, (n) => n.tag === "pattern");
+    expect(patterns.map((p) => p.attrs["id"])).toContain(patternId);
+
+    const annotations = findByRole(root, "annotation", "text").map((el) => el.textContent);
+    expect(annotations.some((t) => t.includes("取り付け位置（切削なし）"))).toBe(true);
+    // ユーザーの note は固定文言に併記される。
+    expect(annotations.some((t) => t.includes("足当たり面"))).toBe(true);
+  });
+
+  it("face=front は実線・face=back は破線で境界線を描く（面規約に整合）", () => {
+    const [part, stock] = makeMarkedPart();
+    const svgText = renderPartcard(part, stock, {
+      marks: [
+        makeMark({ face: "front", x: 50, note: null }),
+        makeMark({ face: "back", x: 400, note: null }),
+      ],
+    });
+    const root = parseXml(svgText);
+
+    const marks = findByRole(root, "mark", "rect");
+    expect(marks).toHaveLength(2);
+
+    const front = marks.find((el) => el.attrs["data-face"] === "front");
+    const back = marks.find((el) => el.attrs["data-face"] === "back");
+    expect(front!.attrs["stroke-dasharray"]).toBeUndefined();
+    expect(back!.attrs["stroke-dasharray"]).toBe("5,3");
+
+    const annotations = findByRole(root, "annotation", "text").map((el) => el.textContent);
+    expect(annotations.some((t) => t.includes("取り付け位置（切削なし）（表面）"))).toBe(true);
+    expect(annotations.some((t) => t.includes("取り付け位置（切削なし）（裏面）"))).toBe(true);
+  });
+
+  it("マーク座標は左下角基準（hole の中心基準と取り違えない）", () => {
+    const [part, stock] = makeMarkedPart();
+    // x=50, y=0, w=38, h=89（＝面の全高）。scale は SCALE_BASE_PX/850 で決まる。
+    const svgText = renderPartcard(part, stock, { marks: [makeMark()] });
+    const root = parseXml(svgText);
+
+    const outline = findByRole(root, "part-outline", "rect")[0];
+    const mark = findByRole(root, "mark", "rect")[0];
+
+    const outlineX = Number(outline.attrs["x"]);
+    const outlineW = Number(outline.attrs["width"]);
+    const scale = outlineW / part.length;
+
+    // 属性値は小数第3位で丸められるため、許容差は 1e-3 で見る。
+    // 左下角 x=50 が矩形の左辺になる（中心基準なら 50-19=31 の位置になるはず）。
+    expect(Number(mark.attrs["x"]) - outlineX).toBeCloseTo(50 * scale, 2);
+    expect(Number(mark.attrs["width"])).toBeCloseTo(38 * scale, 2);
+    // y=0・h=89 は面の全高を覆うため、上辺は輪郭の上辺と一致する。
+    expect(Number(mark.attrs["y"])).toBeCloseTo(Number(outline.attrs["y"]), 2);
+    expect(Number(mark.attrs["height"])).toBeCloseTo(Number(outline.attrs["height"]), 2);
+  });
+
+  it("マークの端・中心がチェーン寸法線に現れる", () => {
+    const [part, stock] = makeMarkedPart();
+    const withoutMarks = renderPartcard(part, stock);
+    const withMarks = renderPartcard(part, stock, {
+      marks: [makeMark({ x: 100, y: 0, w: 40, h: 89 })],
+    });
+
+    const labels = (svgText: string): string[] =>
+      findAll(parseXml(svgText), (n) => n.tag === "text").map((n) => n.textContent);
+
+    // マーク無し: 全長 850 の1段のみ。
+    expect(labels(withoutMarks)).toContain("850");
+    // マーク有り: {100, 120, 140} が対象点に入り、区間 100 / 20 / 20 / 710 が出る。
+    const marked = labels(withMarks);
+    expect(marked).toContain("100");
+    expect(marked).toContain("20");
+    expect(marked).toContain("710");
+    expect(marked).toContain("850");
+  });
+
+  it("assembly 指定時はヘッダに構成名とその構成での使用数が出る", () => {
+    const [part, stock] = makeMarkedPart();
+    const svgText = renderPartcard(part, stock, {
+      marks: [makeMark()],
+      assembly: { id: "uma-1", label: "ウマ1号機（足が内側）", qty: 1 },
+    });
+    const headers = headerTexts(parseXml(svgText));
+    expect(headers).toHaveLength(2);
+    expect(headers[1]).toContain("uma-1");
+    expect(headers[1]).toContain("ウマ1号機（足が内側）");
+    expect(headers[1]).toContain("1");
+  });
+
+  it("marks 未指定なら mark 要素も pattern も出ない（従来出力と同一）", () => {
+    const [part, stock] = makeMarkedPart();
+    const plain = renderPartcard(part, stock);
+    const empty = renderPartcard(part, stock, { marks: [] });
+
+    // 明示的な空配列でも、指定なしと1バイトも変わらない。
+    expect(empty).toBe(plain);
+
+    const root = parseXml(plain);
+    expect(findByRole(root, "mark", "rect")).toHaveLength(0);
+    expect(findAll(root, (n) => n.tag === "pattern")).toHaveLength(0);
+    expect(findAll(root, (n) => n.tag === "defs")).toHaveLength(0);
   });
 });
 

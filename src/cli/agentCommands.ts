@@ -15,15 +15,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { LineCounter, parseDocument } from "yaml";
 
+import { composeSchemaJson } from "../core/composeSchema";
 import type { Issue } from "../core/errors";
-import {
-  extractStockIds,
-  extractStocksFileRef,
-  loadProjectFromRaw,
-  loadStocksFile,
-  readRaw,
-} from "../core/loader";
-import { schemaJson } from "../core/schema";
+import { loadProjectFromRaw, readRaw } from "../core/loader";
 import { resolveIssueLine } from "./positions";
 import { UsageError } from "./usageError";
 
@@ -147,11 +141,12 @@ export function runCheck(
 /**
  * `kidori schema <ファイル>` の中身（引数解析込み）。
  *
- * 合成ロジックは `src/core/schema.ts`（`schemaJson`）・`src/core/loader.ts`
- * （`extractStockIds`/`extractStocksFileRef`/`loadStocksFile`）にすでにあり、
+ * 合成ロジックは `src/core/composeSchema.ts`（`composeSchemaJson`）にあり、
  * ここは薄いラッパ（設計裁定 D5）。`src/extension/schemaContributor.ts` の
  * `requestSchemaContent`/`collectStockIds`（227-239行付近）と同じ合成手順を踏む:
  * インラインの stocks[].id ＋ stocksFile 参照先の id を合わせて enum に注入する。
+ * `kidori build` が書き出す `<ファイル名>.out/schema.json`（SPECS.md §3b）も
+ * 同じ `composeSchemaJson` を通るため、両者の出力は定義上一致する。
  *
  * baseDir（stocksFile の相対パス解決基準）は `loadProject`（loader.ts:1201-1205 付近）・
  * schemaContributor と同一の `dirname(resolve(filePath))` にする（D5 必須条件）。
@@ -193,22 +188,6 @@ export function runSchema(
     return isParseError ? 1 : 2;
   }
 
-  const ids = extractStockIds(raw);
-  const ref = extractStocksFileRef(raw);
-  if (ref !== null) {
-    // schemaContributor の collectStockIds と同じ縮退方針: 参照先が壊れていても
-    // schema コマンド自体は失敗させず、インラインの id だけで合成を続ける
-    // （loadStocksFile は現状 throw しない設計だが、念のため防御する）。
-    try {
-      const result = loadStocksFile(baseDir, ref);
-      for (const stock of result.stocks) {
-        ids.push(stock.id);
-      }
-    } catch {
-      // 縮退: インラインのみで続行。
-    }
-  }
-
-  write(schemaJson([...new Set(ids)]));
+  write(composeSchemaJson(raw, baseDir));
   return 0;
 }

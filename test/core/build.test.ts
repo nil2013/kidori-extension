@@ -4,8 +4,10 @@ import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { build, exactPlanStrictlyBetter } from "../../src/core/build";
+import { runSchema } from "../../src/cli/agentCommands";
+import { build, exactPlanStrictlyBetter, planPartFaces } from "../../src/core/build";
 import { KidoriError, ProjectError } from "../../src/core/errors";
+import { loadProject } from "../../src/core/loader";
 import type { PlanSummary, Summary } from "../../src/core/metrics";
 import * as png from "../../src/core/png";
 
@@ -474,6 +476,55 @@ parts:
     expect(fs.existsSync(path.join(dir, "kidori.schema.json"))).toBe(false);
   });
 
+  it("<ファイル名>.out/schema.json が生成され、kidori schema の出力と一致する", () => {
+    const p = writeNamed("bookshelf.kidori.yaml");
+    const result = build(p, { png: false, log: silent });
+
+    // SPECS §3b:101 — 出力ディレクトリ側にだけ書き出す（正本の隣には書かない）。
+    expect(result.schemaPath).toBe(path.join(result.outDir, "schema.json"));
+    const written = fs.readFileSync(result.schemaPath, "utf-8");
+
+    const chunks: string[] = [];
+    expect(runSchema([p], (s) => chunks.push(s), silent)).toBe(0);
+    expect(written).toBe(chunks.join(""));
+
+    // 正本ディレクトリには依然として何も書かない（v0.6 の廃止と両立する）。
+    expect(fs.existsSync(path.join(dir, "schema.json"))).toBe(false);
+  });
+
+  it("schema.json は stocks[].id の変化に追随して再生成される", () => {
+    const p = path.join(dir, "project.kidori.yaml");
+    const yaml = (stockId: string): string => `
+meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+settings: { exact: off }
+stocks:
+  - { id: ${stockId}, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19 }
+parts:
+  - { id: p1, label: 部材, qty: 1, stock: ${stockId}, length: 500 }
+`;
+    fs.writeFileSync(p, yaml("b1"), "utf-8");
+    const r1 = build(p, { png: false, log: silent });
+    expect(fs.readFileSync(r1.schemaPath, "utf-8")).toContain('"b1"');
+
+    fs.writeFileSync(p, yaml("b2"), "utf-8");
+    const r2 = build(p, { png: false, log: silent });
+    const after = fs.readFileSync(r2.schemaPath, "utf-8");
+    expect(after).toContain('"b2"');
+    expect(after).not.toContain('"b1"');
+  });
+
+  it("schema.json は管理対象のためビルドで残り、管理外ファイルは保全される", () => {
+    const p = writeNamed("bookshelf.kidori.yaml");
+    const r1 = build(p, { png: false, log: silent });
+    fs.writeFileSync(path.join(r1.outDir, "memo.txt"), "手書きメモ", "utf-8");
+
+    const r2 = build(p, { png: false, log: silent });
+    // cleanupStale の管理対象に schema.json を加えたが、毎回生成されるので消えない。
+    expect(fs.existsSync(r2.schemaPath)).toBe(true);
+    // 管理外ファイルには触れない（既存規約の維持）。
+    expect(fs.existsSync(path.join(r2.outDir, "memo.txt"))).toBe(true);
+  });
+
   it("モードライン案内は ./kidori.schema.json を推奨する", () => {
     const p = writeNamed("bookshelf.kidori.yaml");
     const logs: string[] = [];
@@ -483,5 +534,354 @@ parts:
     expect(guide).toBeDefined();
     expect(guide!).toContain("./kidori.schema.json");
     expect(guide!).not.toContain("project.schema.json");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.7: assemblies / marks（SPECS.md §4c・§6）
+// ---------------------------------------------------------------------------
+
+/** SPECS.md §4c の例（ウマ2脚）に相当する正本を任意のサブディレクトリに書く。 */
+function writeIn(subdir: string, body: string): string {
+  const d = path.join(dir, subdir);
+  fs.mkdirSync(d, { recursive: true });
+  const p = path.join(d, "uma.kidori.yaml");
+  fs.writeFileSync(p, body, "utf-8");
+  return p;
+}
+
+const UMA_STOCKS = `
+meta: { project: ウマ, units: mm, schemaVersion: "0.4" }
+settings: { kerf: 3, edgeTrim: 5, exact: off, selectedPlan: null }
+stocks:
+  - { id: 2x4-6f, label: "2×4材 6F", kind: bar, length: 1820, width: 89, thickness: 38, price: 498 }
+parts:
+  - { id: leg,       label: 足,     stock: 2x4-6f, length: 800 }
+  - { id: beam-top,  label: 天板,   stock: 2x4-6f, length: 850 }
+  - { id: beam-foot, label: 接地面, stock: 2x4-6f, length: 900 }
+`;
+
+/** ウマ2脚（両方の assembly が beam-top にマークを持つ）。 */
+const UMA_MARKED = `${UMA_STOCKS}
+assemblies:
+  - id: uma-1
+    label: ウマ1号機（足が内側）
+    contains: { leg: 2, beam-top: 1, beam-foot: 1 }
+    marks:
+      - { on: beam-top, face: front, ref: leg, x: 50, note: 足当たり面 }
+  - id: uma-2
+    label: ウマ2号機（互い違いに噛み合う側）
+    contains: { leg: 2, beam-top: 1, beam-foot: 1 }
+    marks:
+      - { on: beam-top, face: front, ref: leg, x: 120, note: 足当たり面 }
+`;
+
+/** 同じ構成だがマークを1つも持たない（割付不変の対照群）。 */
+const UMA_UNMARKED = `${UMA_STOCKS}
+assemblies:
+  - id: uma-1
+    label: ウマ1号機（足が内側）
+    contains: { leg: 2, beam-top: 1, beam-foot: 1 }
+  - id: uma-2
+    label: ウマ2号機（互い違いに噛み合う側）
+    contains: { leg: 2, beam-top: 1, beam-foot: 1 }
+`;
+
+function partsSvgNames(partsDir: string): string[] {
+  return fs
+    .readdirSync(partsDir)
+    .filter((n) => n.endsWith(".svg"))
+    .sort();
+}
+
+function readText(p: string): string {
+  return fs.readFileSync(p, "utf-8");
+}
+
+describe("build（v0.7: 変種面と基底面の出力集合）", () => {
+  it("全 unit がマーク付き assembly に属する形状は基底面を出さない", () => {
+    const p = writeIn("marked", UMA_MARKED);
+    const result = build(p, { png: false, log: silent });
+
+    // beam-top は qty 2（= uma-1 の1個 + uma-2 の1個）で、その2個とも
+    // マーク付き assembly に属する → 基底面 beam-top.svg は出さない。
+    expect(partsSvgNames(result.partsDir)).toEqual([
+      "beam-foot.svg",
+      "leg.svg",
+      "uma-1-beam-top.svg",
+      "uma-2-beam-top.svg",
+    ]);
+    expect(fs.existsSync(path.join(result.partsDir, "beam-top.svg"))).toBe(false);
+  });
+
+  it("マーク無し assembly の unit がある形状は基底面も出す", () => {
+    // uma-3 は beam-top を1個使うがマークを持たない → その1個が図面を失わない
+    // よう、変種面2枚に加えて基底面 beam-top.svg も出す。
+    const p = writeIn("mixed", `${UMA_MARKED}
+  - id: uma-3
+    label: 予備の天板だけ
+    contains: { beam-top: 1 }
+`);
+    const result = build(p, { png: false, log: silent });
+
+    expect(partsSvgNames(result.partsDir)).toEqual([
+      "beam-foot.svg",
+      "beam-top.svg",
+      "leg.svg",
+      "uma-1-beam-top.svg",
+      "uma-2-beam-top.svg",
+    ]);
+    // 基底面にはマークを描かない。
+    expect(readText(path.join(result.partsDir, "beam-top.svg"))).not.toContain(
+      "取り付け位置",
+    );
+  });
+
+  it("planPartFaces は基底面→変種面の順で、形状は parts の宣言順に並ぶ", () => {
+    const p = writeIn("order", UMA_MARKED);
+    const { project } = loadProject(p);
+    expect(planPartFaces(project).map((f) => f.stem)).toEqual([
+      "leg",
+      "uma-1-beam-top",
+      "uma-2-beam-top",
+      "beam-foot",
+    ]);
+  });
+
+  it("変種面には構成ごとに異なるマーク位置が描かれる", () => {
+    const p = writeIn("variants", UMA_MARKED);
+    const result = build(p, { png: false, log: silent });
+
+    const v1 = readText(path.join(result.partsDir, "uma-1-beam-top.svg"));
+    const v2 = readText(path.join(result.partsDir, "uma-2-beam-top.svg"));
+
+    for (const svg of [v1, v2]) {
+      expect(svg).toContain('data-role="mark"');
+      expect(svg).toContain("取り付け位置（切削なし）");
+      expect(svg).toContain("足当たり面");
+      // D2: 領域はハッチング（pattern を fill で参照する）。
+      expect(svg).toContain("<pattern");
+      expect(svg).toContain('fill="url(#kidori-mark-hatch)"');
+    }
+    // 構成名がヘッダに出るため、印刷しても取り違えない。
+    expect(v1).toContain("ウマ1号機（足が内側）");
+    expect(v2).toContain("ウマ2号機（互い違いに噛み合う側）");
+    // x=50 と x=120 でマーク矩形の位置が異なる。
+    expect(v1).not.toBe(v2);
+  });
+
+  it("BuildResult.partCards は変種面を stem で表し、SVG パスと対応する", () => {
+    const p = writeIn("cards", UMA_MARKED);
+    const result = build(p, { png: false, log: silent });
+
+    expect(result.partCards.map((c) => c.id)).toEqual([
+      "leg",
+      "uma-1-beam-top",
+      "uma-2-beam-top",
+      "beam-foot",
+    ]);
+    for (const card of result.partCards) {
+      expect(fs.existsSync(card.svgPath)).toBe(true);
+      expect(path.basename(card.svgPath)).toBe(`${card.id}.svg`);
+    }
+  });
+
+  it("変種面の陳腐化: assembly を消すと前回の変種面が削除される", () => {
+    const p = writeIn("stale", UMA_MARKED);
+    const r1 = build(p, { png: false, log: silent });
+    expect(fs.existsSync(path.join(r1.partsDir, "uma-2-beam-top.svg"))).toBe(true);
+
+    fs.writeFileSync(p, UMA_UNMARKED, "utf-8");
+    const r2 = build(p, { png: false, log: silent });
+    expect(partsSvgNames(r2.partsDir)).toEqual([
+      "beam-foot.svg",
+      "beam-top.svg",
+      "leg.svg",
+    ]);
+  });
+});
+
+describe("build（v0.7: marks は加工指示図のみ・割付に不干渉）", () => {
+  it("marks は木取り図 SVG には現れない（SPECS §4c:215）", () => {
+    const p = writeIn("cutplan", UMA_MARKED);
+    const result = build(p, { png: false, log: silent });
+
+    for (const planId of result.planIds) {
+      const svg = readText(path.join(result.outDir, `plan-${planId}.svg`));
+      expect(svg).not.toContain("取り付け位置");
+      expect(svg).not.toContain('data-role="mark"');
+    }
+    // 一方、加工指示図（変種面）には現れる。
+    expect(readText(path.join(result.partsDir, "uma-1-beam-top.svg"))).toContain(
+      "取り付け位置（切削なし）",
+    );
+  });
+
+  it("marks の有無で割付結果（歩留まり・カット回数・必要本数）が変わらない", () => {
+    const marked = build(writeIn("packA", UMA_MARKED), { png: false, log: silent });
+    const plain = build(writeIn("packB", UMA_UNMARKED), { png: false, log: silent });
+
+    expect(marked.planIds).toEqual(plain.planIds);
+    expect(marked.summary.rankedPlans).toEqual(plain.summary.rankedPlans);
+    expect(marked.summary.recommendedPlan).toBe(plain.summary.recommendedPlan);
+
+    const totals = (s: Summary): unknown[] =>
+      s.plans.map((ps) => [ps.id, ps.totals.yield, ps.totals.cutCount, ps.totals.stockCounts]);
+    expect(totals(marked.summary)).toEqual(totals(plain.summary));
+
+    // 木取り図そのものも1バイト違わない（配置・切断線が marks に依存しない）。
+    for (const planId of marked.planIds) {
+      expect(readText(path.join(marked.outDir, `plan-${planId}.svg`))).toBe(
+        readText(path.join(plain.outDir, `plan-${planId}.svg`)),
+      );
+    }
+  });
+
+  it("マークを持たない形状の加工指示図は marks の有無で1バイトも変わらない", () => {
+    const marked = build(writeIn("faceA", UMA_MARKED), { png: false, log: silent });
+    const plain = build(writeIn("faceB", UMA_UNMARKED), { png: false, log: silent });
+
+    for (const name of ["leg.svg", "beam-foot.svg"]) {
+      expect(readText(path.join(marked.partsDir, name))).toBe(
+        readText(path.join(plain.partsDir, name)),
+      );
+    }
+  });
+});
+
+describe("build（v0.7: assemblies 不在時の回帰防止）", () => {
+  const legacyYaml = `
+meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+settings: { kerf: 3, edgeTrim: 5, exact: off, selectedPlan: null }
+stocks:
+  - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19, price: 382 }
+parts:
+  - { id: p1, label: 部材1, qty: 2, stock: b1, length: 800 }
+  - { id: p2, label: 部材2, qty: 1, stock: b1, length: 400, features: [{ type: groove, face: front, dir: across, pos: 200, width: 7, depth: 6, end: through }] }
+`;
+
+  it("出力ファイル集合は plan-*.svg / parts/<形状id>.svg / summary.json / schema.json だけ", () => {
+    const p = writeIn("legacy", legacyYaml);
+    const result = build(p, { png: false, log: silent });
+
+    expect(fs.readdirSync(result.outDir).sort()).toEqual([
+      "parts",
+      "plan-A.svg",
+      "plan-B.svg",
+      "plan-C.svg",
+      "schema.json",
+      "summary.json",
+    ]);
+    // 変種面は1枚も出ない（形状ごとに1面という従来規則のまま）。
+    expect(partsSvgNames(result.partsDir)).toEqual(["p1.svg", "p2.svg"]);
+  });
+
+  it("summary.json に assemblies キーが現れない（空配列も出さない）", () => {
+    const p = writeIn("legacy-summary", legacyYaml);
+    const result = build(p, { png: false, log: silent });
+
+    const raw = JSON.parse(readText(result.summaryPath)) as Record<string, unknown>;
+    expect("assemblies" in raw).toBe(false);
+    expect(result.summary.assemblies).toBeUndefined();
+  });
+
+  it("加工指示図 SVG に marks 由来の要素（pattern / defs / mark）が一切入らない", () => {
+    const p = writeIn("legacy-svg", legacyYaml);
+    const result = build(p, { png: false, log: silent });
+
+    for (const name of partsSvgNames(result.partsDir)) {
+      const svg = readText(path.join(result.partsDir, name));
+      expect(svg).not.toContain("<defs");
+      expect(svg).not.toContain("<pattern");
+      expect(svg).not.toContain('data-role="mark"');
+      expect(svg).not.toContain("取り付け位置");
+    }
+  });
+
+  it("assemblies を足してもマークが無ければ加工指示図は1バイトも変わらない", () => {
+    // 「assemblies の導入それ自体」が図面を動かさないことの担保
+    // （SPECS §4c:211「構成の区別が木取り図・歩留まりに影響することはない」）。
+    const withAssemblies = `
+meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+settings: { kerf: 3, edgeTrim: 5, exact: off, selectedPlan: null }
+stocks:
+  - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19, price: 382 }
+parts:
+  - { id: p1, label: 部材1, stock: b1, length: 800 }
+  - { id: p2, label: 部材2, stock: b1, length: 400, features: [{ type: groove, face: front, dir: across, pos: 200, width: 7, depth: 6, end: through }] }
+assemblies:
+  - { id: a1, label: 組1, contains: { p1: 2, p2: 1 } }
+`;
+    const legacy = build(writeIn("cmpA", legacyYaml), { png: false, log: silent });
+    const modern = build(writeIn("cmpB", withAssemblies), { png: false, log: silent });
+
+    expect(partsSvgNames(modern.partsDir)).toEqual(partsSvgNames(legacy.partsDir));
+    for (const name of partsSvgNames(legacy.partsDir)) {
+      expect(readText(path.join(modern.partsDir, name))).toBe(
+        readText(path.join(legacy.partsDir, name)),
+      );
+    }
+    expect(readText(path.join(modern.outDir, "plan-A.svg"))).toBe(
+      readText(path.join(legacy.outDir, "plan-A.svg")),
+    );
+  });
+});
+
+describe("build（v0.7: summary.json の assembly 内訳）", () => {
+  it("assemblies 使用時は id・label・部材内訳・マーク件数を併記する", () => {
+    const p = writeIn("summary", UMA_MARKED);
+    const result = build(p, { png: false, log: silent });
+    const summary = JSON.parse(readText(result.summaryPath)) as Summary;
+
+    expect(summary.assemblies).toEqual([
+      {
+        id: "uma-1",
+        label: "ウマ1号機（足が内側）",
+        parts: [
+          { part: "leg", label: "足", qty: 2 },
+          { part: "beam-top", label: "天板", qty: 1 },
+          { part: "beam-foot", label: "接地面", qty: 1 },
+        ],
+        markCount: 1,
+      },
+      {
+        id: "uma-2",
+        label: "ウマ2号機（互い違いに噛み合う側）",
+        parts: [
+          { part: "leg", label: "足", qty: 2 },
+          { part: "beam-top", label: "天板", qty: 1 },
+          { part: "beam-foot", label: "接地面", qty: 1 },
+        ],
+        markCount: 1,
+      },
+    ]);
+  });
+
+  it("内訳の合計は導出された parts[].qty と一致する", () => {
+    const p = writeIn("summary-total", UMA_MARKED);
+    const summary = build(p, { png: false, log: silent }).summary;
+    const total = (partId: string): number =>
+      (summary.assemblies ?? []).reduce(
+        (n, a) => n + (a.parts.find((x) => x.part === partId)?.qty ?? 0),
+        0,
+      );
+    expect(total("leg")).toBe(4);
+    expect(total("beam-top")).toBe(2);
+    expect(total("beam-foot")).toBe(2);
+  });
+
+  it("部材内訳は parts[] の宣言順（contains のキー順に依存しない）", () => {
+    const p = writeIn("summary-order", `${UMA_STOCKS}
+assemblies:
+  - id: a1
+    label: 逆順で書いた構成
+    contains: { beam-foot: 1, beam-top: 1, leg: 2 }
+`);
+    const summary = build(p, { png: false, log: silent }).summary;
+    expect(summary.assemblies![0].parts.map((x) => x.part)).toEqual([
+      "leg",
+      "beam-top",
+      "beam-foot",
+    ]);
   });
 });
