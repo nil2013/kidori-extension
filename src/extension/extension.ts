@@ -21,7 +21,15 @@ import { parseDocument } from "yaml";
 
 import { build, BuildResult } from "../core/build";
 import { Issue, ProjectError } from "../core/errors";
-import { BASE_SCHEMA_FILENAME, hasKidoriSuffix, projectStem } from "../core/kidorifile";
+import { InitResult, initDirectory } from "../core/init";
+import {
+  BASE_SCHEMA_FILENAME,
+  defaultOutDir,
+  hasKidoriSuffix,
+  projectStem,
+} from "../core/kidorifile";
+import { ScaffoldResult, availablePresets, createScaffold } from "../core/scaffold";
+import type { ResolvedStock } from "../core/stocks";
 import { KidoriPreview, PlanAction, PreviewData } from "./preview";
 import { createCompletionProvider } from "./completion";
 import {
@@ -41,6 +49,17 @@ let extensionPath = "";
 
 /** プロジェクトパス → 直近のビルド結果（SPECS.md §3。1ファイル=1プロジェクト）。 */
 const results = new Map<string, BuildResult>();
+/**
+ * プロジェクトパス → 直近ビルドの失敗メッセージ（成功すると削除する）。
+ *
+ * `results` は成功した最後のビルド結果しか持たないため、「Y のビルドが失敗
+ * → 表示を X に切り替える → Y に戻す」という経路では、`showResult` が
+ * `results` に残る Y の**古い成功結果**を stale バナー無しで表示してしまう
+ * （S-11/S-12 が守る「図面と正本の対応の外形的保証」への回帰）。
+ * このマップで「そのプロジェクトは直近失敗している」ことを独立に記録し、
+ * 表示を戻すたびに `preview.showError` を再発行して stale を再度立てる。
+ */
+const failedProjects = new Map<string, string>();
 /** プレビューが表示している（＝最後にビルド／指定された）プロジェクト。 */
 let activeProjectPath: string | null = null;
 
@@ -50,6 +69,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(channel, diagnostics);
   extensionPath = context.extensionPath;
   results.clear();
+  failedProjects.clear();
   activeProjectPath = null;
 
   // --- 規格材マスタ（4層カスケードのビルトイン層＋ユーザー層）。
@@ -102,16 +122,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   // 閉じたドキュメントの通知は取り下げる。
-  // （テスト用スタブには onDidCloseTextDocument が無いため存在確認する。）
-  const onDidClose = vscode.workspace.onDidCloseTextDocument;
-  if (typeof onDidClose === "function") {
-    context.subscriptions.push(
-      onDidClose((doc) => {
-        shadowReporter.clear(doc.uri);
-        contributor.forget(doc.uri.fsPath);
-      }),
-    );
-  }
+  context.subscriptions.push(
+    vscode.workspace.onDidCloseTextDocument((doc) => {
+      shadowReporter.clear(doc.uri);
+      contributor.forget(doc.uri.fsPath);
+    }),
+  );
 
   // --- ドメイン値補完（規格材カスケード・定尺寸法）。YAML のみ（completion.ts 冒頭コメント参照）。
   // セレクタは広く取り（ファイルごとの register/unregister は churn と解放漏れの元、
@@ -180,6 +196,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("kidori.selectPlan", async () => {
       await selectPlanCommand();
     }),
+    vscode.commands.registerCommand("kidori.new", async () => {
+      await newCommand();
+    }),
+    vscode.commands.registerCommand("kidori.init", async () => {
+      await initCommand();
+    }),
   );
 }
 
@@ -242,6 +264,7 @@ async function buildProject(projectPath: string): Promise<void> {
       log: (m) => channel.appendLine(m),
     });
     results.set(projectPath, result);
+    failedProjects.delete(projectPath);
     await applyDiagnostics(projectPath, result.warnings);
     updatePreview(projectPath, result);
     const star = result.summary.recommendedPlan
@@ -259,30 +282,41 @@ async function buildProject(projectPath: string): Promise<void> {
       preview.boundProjectPath === null || preview.boundProjectPath === projectPath;
     if (e instanceof ProjectError) {
       await applyDiagnostics(projectPath, e.issues);
+      const message =
+        "検証エラー:\n" +
+        e.issues.map((i) => `[${i.severity}] ${i.path}: ${i.message}`).join("\n");
+      failedProjects.set(projectPath, message);
       if (showsThisProject) {
-        preview.showError(
-          "検証エラー:\n" +
-            e.issues.map((i) => `[${i.severity}] ${i.path}: ${i.message}`).join("\n"),
-        );
+        preview.showError(message);
       }
       channel.appendLine(`[build] 検証エラーのため中断しました`);
     } else {
       const msg = e instanceof Error ? e.message : String(e);
       channel.appendLine(`[build] エラー: ${msg}`);
+      const message = `ビルドエラー:\n${msg}`;
+      failedProjects.set(projectPath, message);
       if (showsThisProject) {
-        preview.showError(`ビルドエラー:\n${msg}`);
+        preview.showError(message);
       }
       void vscode.window.showErrorMessage(`kidori: ${projectStem(projectPath)}: ${msg}`);
     }
-    // ビルド失敗時は <stem>.out/ に失敗マーカーが残り、旧図面は最新ではない旨を案内する。
+    // ビルド失敗時は出力先に失敗マーカーが残り、旧図面は最新ではない旨を案内する
+    // （拡張は build() に outDir を渡さないため、既定規則 defaultOutDir と必ず一致する）。
+    const outDir = defaultOutDir(projectPath);
     channel.appendLine(
-      "[build] 失敗しました。<stem>.out/BUILD-FAILED.txt に詳細と正本ハッシュを記録しました" +
-        "（出力ディレクトリの図面は最新の正本を反映していません）",
+      `[build] 失敗しました。${path.join(outDir, "BUILD-FAILED.txt")} に失敗の詳細と` +
+        `正本ハッシュを記録しました（${outDir} の図面は最新の正本を反映していません）`,
     );
   }
 }
 
-/** 既にビルド済みのプロジェクトへプレビューの表示を切り替える。 */
+/**
+ * 既にビルド済みのプロジェクトへプレビューの表示を切り替える。
+ *
+ * `results` にある最後の成功結果を表示した**直後**に、そのプロジェクトが
+ * 直近失敗として記録されていれば `preview.showError` を再発行し、stale
+ * バナーを再度立てる（古い成功結果を無警告で「現行」として見せない。§WIRE-4）。
+ */
 function showResult(projectPath: string): void {
   const result = results.get(projectPath);
   if (!result) {
@@ -290,6 +324,10 @@ function showResult(projectPath: string): void {
   }
   activeProjectPath = projectPath;
   updatePreview(projectPath, result);
+  const failure = failedProjects.get(projectPath);
+  if (failure !== undefined) {
+    preview.showError(failure);
+  }
 }
 
 function updatePreview(projectPath: string, result: BuildResult): void {
@@ -435,6 +473,198 @@ async function selectPlanCommand(): Promise<void> {
   const planId =
     picked.label === "採用を解除" ? null : picked.label.replace(/^案 /, "").split(" ")[0];
   await applySelection(planId, target);
+}
+
+// ---------------------------------------------------------------------------
+// kidori.new / kidori.init（SPECS.md §3a「① 着手」を VS Code 上で完成させる）
+// ---------------------------------------------------------------------------
+
+interface FolderPickItem extends vscode.QuickPickItem {
+  fsPath: string;
+}
+
+interface PresetPickItem extends vscode.QuickPickItem {
+  key: string;
+}
+
+interface WithStocksPickItem extends vscode.QuickPickItem {
+  withStocks: boolean;
+}
+
+/**
+ * ワークスペースフォルダから対象ディレクトリを選ばせる（単一ルートなら自明に決まる）。
+ *
+ * @returns フォルダの絶対パス。ワークスペース未オープン／キャンセル時は null。
+ */
+async function pickWorkspaceFolder(placeHolder: string): Promise<string | null> {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    void vscode.window.showErrorMessage(
+      "kidori: ワークスペースフォルダが開かれていません。フォルダを開いてから実行してください。",
+    );
+    return null;
+  }
+  if (folders.length === 1) {
+    return folders[0].uri.fsPath;
+  }
+  const items: FolderPickItem[] = folders.map((f) => ({
+    label: f.name,
+    description: f.uri.fsPath,
+    fsPath: f.uri.fsPath,
+  }));
+  const picked = await vscode.window.showQuickPick(items, { placeHolder });
+  return picked ? picked.fsPath : null;
+}
+
+/** kidori.new の生成先ディレクトリ: アクティブエディタがあればそのディレクトリ、無ければワークスペースルート。 */
+async function resolveNewTargetDir(): Promise<string | null> {
+  const active = vscode.window.activeTextEditor?.document.uri.fsPath;
+  if (active) {
+    return path.dirname(active);
+  }
+  return pickWorkspaceFolder("雛形を生成するフォルダを選択してください");
+}
+
+/**
+ * ファイル名の入力を最小限だけ検査する（core 側が kidori サフィックスを
+ * 補うため、過剰な検証はしない。空文字・パス区切り等の明らかな不正のみ弾く）。
+ */
+function validateScaffoldFileName(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return "ファイル名を入力してください";
+  }
+  if (trimmed.includes("/") || trimmed.includes("\\")) {
+    return "パス区切り文字は使用できません（ファイル名のみを入力してください）";
+  }
+  if (trimmed === "." || trimmed === "..") {
+    return "有効なファイル名ではありません";
+  }
+  return undefined;
+}
+
+/** QuickPick の detail に出す規格材の種別・寸法。 */
+function presetDetail(stock: ResolvedStock): string {
+  const e = stock.entry;
+  const dims = [e.length, e.width, e.thickness].filter((v) => v !== undefined).join("×");
+  return `${e.kind ?? "?"} ・ ${dims}mm`;
+}
+
+/** 「kidori: New Cutting Plan」（`kidori.new`）。 */
+async function newCommand(): Promise<void> {
+  const dir = await resolveNewTargetDir();
+  if (dir === null) {
+    return;
+  }
+
+  const fileName = await vscode.window.showInputBox({
+    prompt: "生成するファイル名（例: bookshelf。拡張子は省略可。.kidori.yaml は自動付与されます）",
+    placeHolder: "bookshelf",
+    validateInput: validateScaffoldFileName,
+  });
+  if (fileName === undefined) {
+    return; // キャンセル
+  }
+  const trimmed = fileName.trim();
+  const invalidReason = validateScaffoldFileName(trimmed);
+  if (invalidReason) {
+    // showInputBox の validateInput は対話的な入力中の防御であり、モックや
+    // 将来の呼び出し経路がこれを経由しない場合に備えて呼び出し後にも検査する。
+    void vscode.window.showErrorMessage(`kidori: ${invalidReason}`);
+    return;
+  }
+  const filePath = path.join(dir, trimmed);
+
+  const available = availablePresets(extensionPath, filePath);
+  let selectedKeys: string[] | undefined;
+  if (available.length > 0) {
+    const items: PresetPickItem[] = available.map((s) => ({
+      label: s.entry.label ?? s.key,
+      description: s.key,
+      detail: presetDetail(s),
+      key: s.key,
+    }));
+    const picked = await vscode.window.showQuickPick(items, {
+      canPickMany: true,
+      placeHolder: "使用する規格材プリセットを選択してください（未選択なら既定の最小雛形）",
+    });
+    if (picked !== undefined) {
+      selectedKeys = picked.map((p) => p.key);
+    }
+  }
+
+  let result: ScaffoldResult;
+  try {
+    result = createScaffold(filePath, { rootPath: extensionPath, presets: selectedKeys });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    void vscode.window.showErrorMessage(`kidori: ${msg}`);
+    return;
+  }
+
+  const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(result.path));
+  await vscode.window.showTextDocument(doc);
+  vscode.window.setStatusBarMessage(`kidori: 雛形を生成しました → ${result.path}`, 5000);
+
+  if (!result.modelineEnabled) {
+    const action = "kidori init を実行";
+    const picked = await vscode.window.showInformationMessage(
+      "VS Code 以外でも補完・検証を使うには `kidori init` が必要です" +
+        "（kidori.schema.json を生成し、雛形のモードラインを有効化できます）。",
+      action,
+    );
+    if (picked === action) {
+      await vscode.commands.executeCommand("kidori.init");
+    }
+  }
+}
+
+/** 「kidori: ディレクトリを初期化」（`kidori.init`）。 */
+async function initCommand(): Promise<void> {
+  const dir = await pickWorkspaceFolder("初期化するフォルダを選択してください");
+  if (dir === null) {
+    return;
+  }
+
+  const withStocksItems: WithStocksPickItem[] = [
+    {
+      label: "含めない（既定）",
+      detail: "共有 stocks.yaml は生成しない",
+      withStocks: false,
+    },
+    {
+      label: "共有 stocks.yaml も生成する",
+      detail: "複数プロジェクトで規格材マスタを共有する場合（CLI の --with-stocks 相当）",
+      withStocks: true,
+    },
+  ];
+  const withStocksPicked = await vscode.window.showQuickPick(withStocksItems, {
+    placeHolder: "共有 stocks.yaml の雛形も生成しますか？",
+  });
+  if (withStocksPicked === undefined) {
+    return; // キャンセル
+  }
+
+  let result: InitResult;
+  try {
+    result = initDirectory(dir, {
+      rootPath: extensionPath,
+      withStocks: withStocksPicked.withStocks,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    void vscode.window.showErrorMessage(`kidori: ${msg}`);
+    return;
+  }
+
+  channel.appendLine(`[init] ${result.dir} を初期化しました`);
+  for (const action of result.actions) {
+    channel.appendLine(`[init]   ${action.message}`);
+  }
+  channel.show(true);
+  void vscode.window.showInformationMessage(
+    `kidori: ${result.dir} を初期化しました（詳細は出力パネル「kidori」参照）`,
+  );
 }
 
 /**

@@ -53,6 +53,15 @@ export function __setActiveTextEditor(editor: unknown): void {
   activeEditorState.value = editor;
 }
 
+/** createOutputChannel(name) ごとに appendLine された行を溜める（テストから検証する）。 */
+const channelLines = new Map<string, string[]>();
+export function __getChannelLines(name: string): readonly string[] {
+  return channelLines.get(name) ?? [];
+}
+export function __resetChannels(): void {
+  channelLines.clear();
+}
+
 export const window = {
   createWebviewPanel(
     viewType: string,
@@ -91,27 +100,98 @@ export const window = {
   get activeTextEditor(): unknown {
     return activeEditorState.value;
   },
-  createOutputChannel(_name: string) {
+  createOutputChannel(name: string) {
+    const lines = channelLines.get(name) ?? [];
+    channelLines.set(name, lines);
     return {
-      appendLine(_line: string) {
-        // extension.ts はログ文字列を投げるだけ。テストは内容を検証しない。
+      appendLine(line: string) {
+        lines.push(line);
+      },
+      show(..._args: unknown[]) {
+        // 実際にはパネルを表示するが、テストは表示状態を検証しない。
       },
       dispose() {},
     };
   },
-  showWarningMessage(..._args: unknown[]): Thenable<string | undefined> {
+  showWarningMessage(message: string, ...items: unknown[]): Thenable<string | undefined> {
+    recordedCalls.push({ kind: "showWarningMessage", message, items });
     return Promise.resolve(undefined);
   },
-  showErrorMessage(..._args: unknown[]): Thenable<string | undefined> {
+  showErrorMessage(message: string, ...items: unknown[]): Thenable<string | undefined> {
+    recordedCalls.push({ kind: "showErrorMessage", message, items });
     return Promise.resolve(undefined);
   },
   setStatusBarMessage(..._args: unknown[]): { dispose(): void } {
     return { dispose() {} };
   },
-  showQuickPick(..._args: unknown[]): Thenable<unknown | undefined> {
-    return Promise.resolve(undefined);
+  showQuickPick(items: unknown, options?: unknown): Thenable<unknown | undefined> {
+    recordedCalls.push({ kind: "showQuickPick", items, options });
+    return Promise.resolve(shiftQueue(quickPickQueue));
+  },
+  showInputBox(options?: unknown): Thenable<string | undefined> {
+    recordedCalls.push({ kind: "showInputBox", options });
+    return Promise.resolve(shiftQueue(inputBoxQueue) as string | undefined);
+  },
+  showInformationMessage(message: string, ...items: unknown[]): Thenable<unknown | undefined> {
+    recordedCalls.push({ kind: "showInformationMessage", message, items });
+    return Promise.resolve(shiftQueue(informationMessageQueue));
+  },
+  showTextDocument(document: unknown, ..._rest: unknown[]): Thenable<unknown> {
+    openedTextDocuments.push(document);
+    return Promise.resolve({ document });
   },
 };
+
+// ---------------------------------------------------------------------------
+// テストからの応答注入（showQuickPick / showInputBox / showInformationMessage）。
+//
+// 実際の VS Code はユーザー操作の結果を Thenable で返すが、テストからは
+// あらかじめ「次に呼ばれたときの戻り値」を1件ずつ積んでおくことでこれを模擬する
+// （呼ばれる順に1件ずつ消費し、積んでいなければ undefined＝キャンセル相当）。
+// 併せて呼び出し内容（渡された items/options/message）も記録し、
+// 「何を提示したか」をテストからアサートできるようにする。
+// ---------------------------------------------------------------------------
+
+const quickPickQueue: unknown[] = [];
+const inputBoxQueue: unknown[] = [];
+const informationMessageQueue: unknown[] = [];
+export interface RecordedWindowCall {
+  kind:
+    | "showQuickPick"
+    | "showInputBox"
+    | "showInformationMessage"
+    | "showWarningMessage"
+    | "showErrorMessage";
+  [key: string]: unknown;
+}
+const recordedCalls: RecordedWindowCall[] = [];
+
+function shiftQueue<T>(queue: T[]): T | undefined {
+  return queue.length > 0 ? queue.shift() : undefined;
+}
+
+export function __queueQuickPick(value: unknown): void {
+  quickPickQueue.push(value);
+}
+export function __queueInputBox(value: string | undefined): void {
+  inputBoxQueue.push(value);
+}
+export function __queueInformationMessage(value: unknown): void {
+  informationMessageQueue.push(value);
+}
+export function __recordedWindowCalls(): readonly RecordedWindowCall[] {
+  return recordedCalls;
+}
+export function __resetWindowMocks(): void {
+  quickPickQueue.length = 0;
+  inputBoxQueue.length = 0;
+  informationMessageQueue.length = 0;
+  recordedCalls.length = 0;
+  openedTextDocuments.length = 0;
+}
+
+/** showTextDocument に渡されたドキュメント（テストから開いたファイルを検証する）。 */
+export const openedTextDocuments: unknown[] = [];
 
 // ---------------------------------------------------------------------------
 // ここから extension.ts の activate() を動かすための追加スタブ。
@@ -246,6 +326,10 @@ export const commands = {
 export function __resetCommands(): void {
   commandRegistry.clear();
 }
+/** コマンドが実際に registerCommand されているか（"command not found" の回帰検知）。 */
+export function __isCommandRegistered(id: string): boolean {
+  return commandRegistry.has(id);
+}
 
 // --- workspace.getConfiguration。section 単位のフラットな key→value ストア。
 const configStore = new Map<string, Map<string, unknown>>();
@@ -312,6 +396,18 @@ export function __resetSaveListeners(): void {
   saveListeners.length = 0;
 }
 
+// --- onDidCloseTextDocument。__fireDidSave と同じ理由で、拡張ホストが
+// ドキュメントを閉じたことを検知してリスナーを呼ぶ動作を模擬する。
+const closeListeners: ((doc: TextDocumentLike) => void)[] = [];
+export function __fireDidClose(doc: TextDocumentLike): void {
+  for (const listener of [...closeListeners]) {
+    listener(doc);
+  }
+}
+export function __resetCloseListeners(): void {
+  closeListeners.length = 0;
+}
+
 /** vscode.workspace.openTextDocument が返す TextDocument の最小実装。 */
 function makeTextDocument(fsPath: string) {
   const text = fs.readFileSync(fsPath, "utf-8");
@@ -370,6 +466,17 @@ export const workspace = {
   },
   onDidChangeTextDocument(_listener: unknown): { dispose(): void } {
     return { dispose() {} };
+  },
+  onDidCloseTextDocument(
+    listener: (doc: TextDocumentLike) => void,
+  ): { dispose(): void } {
+    closeListeners.push(listener);
+    return {
+      dispose() {
+        const i = closeListeners.indexOf(listener);
+        if (i >= 0) closeListeners.splice(i, 1);
+      },
+    };
   },
   onDidSaveTextDocument(
     listener: (doc: TextDocumentLike) => void,
