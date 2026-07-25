@@ -27,9 +27,16 @@
  *    ヒントを添える。§4b 自身がモードラインを「VS Code 以外の環境向けの代替
  *    手段」と位置づけており（VS Code では拡張がスキーマをメモリ上で供給する）、
  *    字面からの軽微な逸脱だが意図には忠実である。
+ *
+ * 4. **AGENTS.md 不在時は薄いポインタ版も併せて生成する**（SPECS.md §3a）。
+ *    「ディレクトリ直下」は、生成した kidori ファイルと同じディレクトリを指すと
+ *    解釈する（本モジュールは1ファイル単位で動くため、他に自然な基準がない。
+ *    `kidori init` はディレクトリ全体の一括セットアップという別の入口）。
+ *    テンプレート・書き出し条件（既存ファイルは上書きしない）は `ensureAgentsFile`
+ *    に一本化し、`kidori init`（core/init.ts）と共有する（二重実装防止）。
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { KidoriError } from "./errors";
@@ -65,6 +72,55 @@ const EDGE_TRIM = 5;
 /** `kidori new` に固有のエラー（CLI は exit 1 で扱う）。 */
 export class ScaffoldError extends KidoriError {}
 
+// ---------------------------------------------------------------------------
+// AGENTS.md（`kidori new` / `kidori init` の共有ロジック。SPECS.md §3a）
+//
+// AGENTS.md を生成するのは主経路の `kidori new`（ディレクトリ直下に無い場合）と、
+// 任意の `kidori init` の両方。テンプレートと書き出しロジックは二重実装にせず、
+// ここ（core/scaffold.ts）を単一ソースとして core/init.ts から呼ばせる。
+// ---------------------------------------------------------------------------
+
+/** エージェント向け導線のファイル名（SPECS.md §3a）。 */
+export const AGENTS_FILENAME = "AGENTS.md";
+
+/** AGENTS.md のテンプレート資産（インストールルート相対）。薄いポインタ方針（SPECS.md §3b）。 */
+export const AGENTS_TEMPLATE_RELPATH = join("assets", "AGENTS.template.md");
+
+export interface AgentsFileResult {
+  /** 対象 AGENTS.md の絶対パス。 */
+  path: string;
+  /** 今回の呼び出しで新規に書き出したか（既存なら false でスキップ）。 */
+  created: boolean;
+}
+
+/**
+ * ディレクトリ直下に `AGENTS.md` が無ければテンプレートから生成する（**既存ファイルは
+ * 絶対に上書きしない**。SPECS.md §3a「既存ファイルは上書きしない」）。
+ *
+ * `kidori new`（本ファイルの `createScaffold`）と `kidori init`（core/init.ts の
+ * `initDirectory`）の両方がこの関数を呼ぶ。テンプレート本文・書き出し条件を
+ * 二重に持たないための共有ヘルパ。
+ */
+export function ensureAgentsFile(dir: string, rootPath: string): AgentsFileResult {
+  const target = join(dir, AGENTS_FILENAME);
+  if (existsSync(target)) {
+    return { path: target, created: false };
+  }
+  const templatePath = join(rootPath, AGENTS_TEMPLATE_RELPATH);
+  let text: string;
+  try {
+    text = readFileSync(templatePath, "utf-8");
+  } catch (e) {
+    throw new ScaffoldError(
+      `AGENTS.md のテンプレートを読み込めませんでした: ${templatePath}` +
+        `（${e instanceof Error ? e.message : String(e)}）。`,
+    );
+  }
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(target, text, "utf-8");
+  return { path: target, created: true };
+}
+
 export interface ScaffoldOptions {
   /**
    * `assets/` を含むインストールルート（バンドル後は `dist/` の親）。
@@ -85,6 +141,13 @@ export interface ScaffoldResult {
   presetKeys: string[];
   /** モードラインを有効な形で書いたか（`kidori.schema.json` が実在した）。 */
   modelineEnabled: boolean;
+  /**
+   * 雛形と同じディレクトリ直下に `AGENTS.md` を新規生成したか（SPECS.md §3a）。
+   * 既に存在していた場合は `false`（上書きしていない）。
+   */
+  agentsCreated: boolean;
+  /** `AGENTS.md` の絶対パス（新規生成の有無に関わらず、対象ディレクトリ直下の想定パス）。 */
+  agentsPath: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -398,9 +461,16 @@ export function createScaffold(filePath: string, options: ScaffoldOptions): Scaf
   // wx: 生成先の存在チェックと書き込みの間に割り込まれても上書きしない。
   writeFileSync(target, text, { encoding: "utf-8", flag: "wx" });
 
+  // ディレクトリ直下（生成した kidori ファイルと同じディレクトリ）に AGENTS.md が
+  // 無ければ併せて生成する（SPECS.md §3a「AGENTS.md 不在時は薄いポインタ版も生成」）。
+  // 既存ファイルは ensureAgentsFile 内で判定し、絶対に上書きしない。
+  const agents = ensureAgentsFile(dir, options.rootPath);
+
   return {
     path: target,
     presetKeys: [...active, ...commented].map((s) => s.key),
     modelineEnabled,
+    agentsCreated: agents.created,
+    agentsPath: agents.path,
   };
 }

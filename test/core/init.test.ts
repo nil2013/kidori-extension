@@ -117,38 +117,63 @@ describe("initDirectory（生成物）", () => {
   });
 });
 
-describe("AGENTS.md（SPECS.md §3a のエージェント導線）", () => {
-  it("4箇条（形式の要約・最小サンプル・スキーマ参照・コマンド/出力）を含む", () => {
+describe("AGENTS.md（SPECS.md §3b「薄いポインタ方針」のエージェント導線）", () => {
+  it("コマンド一覧（new/init/build/select/check/schema）を含む", () => {
     init();
     const text = read(AGENTS_FILENAME);
-    expect(text).toContain("meta.schemaVersion");
-    expect(text).toContain("```yaml");
-    expect(text).toContain(BASE_SCHEMA_FILENAME);
-    for (const cmd of ["kidori new", "kidori init", "kidori build", "kidori select"]) {
+    for (const cmd of [
+      "kidori new",
+      "kidori init",
+      "kidori build",
+      "kidori select",
+      "kidori check",
+      "kidori schema",
+    ]) {
       expect(text).toContain(cmd);
     }
+  });
+
+  it("PATH 非依存の実行方法（node dist/cli.js 相当）を含む", () => {
+    init();
+    const text = read(AGENTS_FILENAME);
+    expect(text).toContain("node dist/cli.js");
+    expect(text).toContain("npm link");
+  });
+
+  it("「形式仕様は kidori schema で取得する」旨を含む", () => {
+    init();
+    const text = read(AGENTS_FILENAME);
+    expect(text).toMatch(/kidori schema <ファイル名>/);
+  });
+
+  it("出力物（<ファイル名>.out/ 配下。schema.json を含む）の説明を含む", () => {
+    init();
+    const text = read(AGENTS_FILENAME);
     expect(text).toContain(".out/");
+    expect(text).toContain("schema.json");
+    expect(text).toContain("summary.json");
   });
 
-  it("最小サンプル YAML がスキーマ・意味検証を通る（AGENTS.md の記載が実在の形式である）", () => {
+  it("assembly ごとの変種面（marks を持つ場合のファイル名規則）の説明を含む", () => {
     init();
     const text = read(AGENTS_FILENAME);
-    const sample = /```yaml\n([\s\S]*?)```/.exec(text)?.[1] as string;
-    expect(sample).toBeDefined();
-
-    const p = path.join(dir, "agents-sample.kidori.yaml");
-    fs.writeFileSync(p, sample, "utf-8");
-    const result = build(p, { png: false, log: silent });
-    expect(result.warnings).toEqual([]);
-    expect(result.planIds.length).toBeGreaterThan(0);
+    expect(text).toContain("parts/<assembly id>-<部材 id>.svg");
+    expect(text).toContain("変種面");
   });
 
-  it("形式仕様の本文を複製せず、kidori.schema.json を正本として参照させる", () => {
+  it("形式仕様の要約を複製しない（旧: kidori.schema.json が正本／最小サンプル YAML／データモデルの解説）", () => {
     init();
     const text = read(AGENTS_FILENAME);
-    expect(text).toMatch(/`kidori\.schema\.json`.*正本/);
-    // description 辞書の丸写し（drift 経路）になっていないこと。
-    // 目安として、スキーマの description 本文が転記されていないことを確認する。
+    // 旧テンプレートの「kidori.schema.json が正本」という静的ファイル参照方式は
+    // 撤回されている（SPECS.md §3b: 問い合わせ方式へ置き換え）。
+    expect(text).not.toMatch(/`kidori\.schema\.json`.*正本/);
+    // 形式仕様の要約（データモデルの説明・最小サンプル YAML）を複製していない。
+    expect(text).not.toContain("```yaml");
+    expect(text).not.toContain("meta.schemaVersion");
+    expect(text).not.toContain("左下原点");
+    expect(text).not.toContain("トップレベルは");
+    expect(text).not.toContain("来歴キー");
+    // スキーマの description 本文の丸写し（drift 経路）になっていないこと。
     expect(text).not.toContain("1〜3 にクランプされる");
     expect(text).not.toContain("挽き割り");
   });

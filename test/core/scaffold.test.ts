@@ -9,6 +9,7 @@
  *   - 未知のプリセットキーでエラーになり、利用可能キーが列挙されること
  *   - モードラインの条件分岐（`kidori.schema.json` の有無）
  *   - `--preset` の反復指定（bar / sheet / 複数）
+ *   - AGENTS.md 不在時の併せ生成（薄いポインタ方針。既存ファイルは上書きしない）
  *
  * --- テスト環境の約束 ---
  * カスケードのユーザー層（$XDG_CONFIG_HOME/kidori/stocks.yaml）を読むため、
@@ -27,10 +28,12 @@ import { build } from "../../src/core/build";
 import { loadProjectFromRaw, validateAgainstSchema } from "../../src/core/loader";
 import { buildSchema, writeBaseSchema } from "../../src/core/schema";
 import {
+  AGENTS_FILENAME,
   DEFAULT_BAR_PRESET,
   DEFAULT_SHEET_PRESET,
   ScaffoldError,
   createScaffold,
+  ensureAgentsFile,
   resolveScaffoldPath,
 } from "../../src/core/scaffold";
 
@@ -271,5 +274,62 @@ describe("モードライン（SPECS.md §4b）", () => {
     expect(line.replace("# ", "")).toBe(
       "# yaml-language-server: $schema=./kidori.schema.json",
     );
+  });
+});
+
+describe("createScaffold（AGENTS.md の併せ生成。SPECS.md §3a）", () => {
+  it("AGENTS.md が不在なら、雛形と同じディレクトリに併せて生成する", () => {
+    expect(fs.existsSync(path.join(dir, AGENTS_FILENAME))).toBe(false);
+    const result = createScaffold(path.join(dir, "bookshelf"), { rootPath: repoRoot });
+    expect(result.agentsCreated).toBe(true);
+    expect(result.agentsPath).toBe(path.join(dir, AGENTS_FILENAME));
+    expect(fs.existsSync(path.join(dir, AGENTS_FILENAME))).toBe(true);
+    // kidori init と同一のテンプレート（薄いポインタ方針）。
+    const text = fs.readFileSync(path.join(dir, AGENTS_FILENAME), "utf-8");
+    expect(text).toContain("kidori schema");
+    expect(text).toContain("node dist/cli.js");
+  });
+
+  it("既存の AGENTS.md は絶対に上書きしない（内容が保存される）", () => {
+    const custom = "# 独自のメモ\nこの内容は保持されるべき\n";
+    fs.writeFileSync(path.join(dir, AGENTS_FILENAME), custom, "utf-8");
+
+    const result = createScaffold(path.join(dir, "bookshelf"), { rootPath: repoRoot });
+    expect(result.agentsCreated).toBe(false);
+    expect(fs.readFileSync(path.join(dir, AGENTS_FILENAME), "utf-8")).toBe(custom);
+  });
+
+  it("「ディレクトリ直下」は生成した kidori ファイルと同じディレクトリを指す（ネストしたパス）", () => {
+    const nested = path.join(dir, "sub", "deep");
+    const result = createScaffold(path.join(nested, "desk"), { rootPath: repoRoot });
+    expect(fs.existsSync(path.join(nested, AGENTS_FILENAME))).toBe(true);
+    expect(result.agentsPath).toBe(path.join(nested, AGENTS_FILENAME));
+    // 親ディレクトリ（dir 直下）には生成されない。
+    expect(fs.existsSync(path.join(dir, AGENTS_FILENAME))).toBe(false);
+  });
+
+  it("2回 new しても2回目は AGENTS.md を壊さない（同一ディレクトリへの複数プロジェクト同居）", () => {
+    createScaffold(path.join(dir, "bookshelf"), { rootPath: repoRoot });
+    const before = fs.readFileSync(path.join(dir, AGENTS_FILENAME), "utf-8");
+
+    const result = createScaffold(path.join(dir, "desk"), { rootPath: repoRoot });
+    expect(result.agentsCreated).toBe(false);
+    expect(fs.readFileSync(path.join(dir, AGENTS_FILENAME), "utf-8")).toBe(before);
+  });
+});
+
+describe("ensureAgentsFile（kidori new / kidori init 共有ヘルパ）", () => {
+  it("不在なら作成し created: true を返す", () => {
+    const result = ensureAgentsFile(dir, repoRoot);
+    expect(result.created).toBe(true);
+    expect(fs.existsSync(result.path)).toBe(true);
+  });
+
+  it("既存なら書き換えず created: false を返す", () => {
+    const custom = "# 独自のメモ\n";
+    fs.writeFileSync(path.join(dir, AGENTS_FILENAME), custom, "utf-8");
+    const result = ensureAgentsFile(dir, repoRoot);
+    expect(result.created).toBe(false);
+    expect(fs.readFileSync(result.path, "utf-8")).toBe(custom);
   });
 });

@@ -18,29 +18,31 @@
  *   既存行には触れない（ユーザーが書いた無関係な除外規則を壊さないため）。
  * - **スキーマは単一ソース**。`kidori.schema.json` は core/schema.ts の
  *   `writeBaseSchema` が書き出す。ここに手書きのコピーを置かない（drift 防止）。
- * - **AGENTS.md は仕様の複製をしない**。記載粒度は SPECS.md §8 で運用判断へ
- *   先送りされているが、形式仕様の本文を複製するとスキーマの description との
- *   drift 経路になる。要約＋最小サンプル＋スキーマ参照＋コマンド／出力説明で止める。
+ * - **AGENTS.md は薄いポインタ方針**（SPECS.md §3b）。形式仕様の要約を複製せず、
+ *   コマンド一覧・PATH 非依存の実行方法・「`kidori schema` で取得」の案内・
+ *   出力物の説明のみに留める。テンプレート・書き出しロジックは core/scaffold.ts の
+ *   `ensureAgentsFile` に一本化し、`kidori new`（AGENTS.md 不在時）と共有する
+ *   （二重実装防止）。
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { KidoriError } from "./errors";
 import { BASE_SCHEMA_FILENAME, OUT_DIR_SUFFIX } from "./kidorifile";
 import { baseSchemaJson, writeBaseSchema } from "./schema";
 import {
+  AGENTS_FILENAME,
+  AGENTS_TEMPLATE_RELPATH,
   DEFAULT_BAR_PRESET,
   DEFAULT_SHEET_PRESET,
+  ScaffoldError,
   availablePresets,
+  ensureAgentsFile,
 } from "./scaffold";
 import { ResolvedStock, materializeEntry } from "./stocks";
 
-/** エージェント向け導線のファイル名（SPECS.md §3a）。 */
-export const AGENTS_FILENAME = "AGENTS.md";
-
-/** AGENTS.md のテンプレート資産（インストールルート相対）。 */
-export const AGENTS_TEMPLATE_RELPATH = join("assets", "AGENTS.template.md");
+export { AGENTS_FILENAME, AGENTS_TEMPLATE_RELPATH };
 
 /** 共有規格材ファイルの名前（カスケードのディレクトリ層 兼 stocksFile: の参照先。§4b）。 */
 export const SHARED_STOCKS_FILENAME = "stocks.yaml";
@@ -85,24 +87,23 @@ function skipped(file: string, extra = ""): InitAction {
   return { file, status: "skipped", message: `スキップ: ${file}（既存）${extra}` };
 }
 
-/** AGENTS.md を書き出す（テンプレート資産をそのままコピーする）。 */
+/**
+ * AGENTS.md を書き出す（テンプレート資産をそのままコピーする）。
+ *
+ * 実体は core/scaffold.ts の `ensureAgentsFile`（`kidori new` と共有。二重実装防止）。
+ * ここではその結果を `initDirectory` の `InitAction` 報告形式に変換するだけ。
+ */
 function initAgents(dir: string, rootPath: string): InitAction {
-  const target = join(dir, AGENTS_FILENAME);
-  if (existsSync(target)) {
-    return skipped(AGENTS_FILENAME);
-  }
-  const templatePath = join(rootPath, AGENTS_TEMPLATE_RELPATH);
-  let text: string;
+  let result: ReturnType<typeof ensureAgentsFile>;
   try {
-    text = readFileSync(templatePath, "utf-8");
+    result = ensureAgentsFile(dir, rootPath);
   } catch (e) {
-    throw new InitError(
-      `AGENTS.md のテンプレートを読み込めませんでした: ${templatePath}` +
-        `（${e instanceof Error ? e.message : String(e)}）。`,
-    );
+    if (e instanceof ScaffoldError) {
+      throw new InitError(e.message);
+    }
+    throw e;
   }
-  writeFileSync(target, text, "utf-8");
-  return created(AGENTS_FILENAME);
+  return result.created ? created(AGENTS_FILENAME) : skipped(AGENTS_FILENAME);
 }
 
 /**
