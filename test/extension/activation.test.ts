@@ -74,11 +74,16 @@ describe("activation: 保存経路と手動ビルドコマンド経路がいず�
     __resetSaveListeners();
     __setActiveTextEditor(undefined);
 
-    // 副作用（project.schema.json / out/）をリポジトリ外に隔離するため、
-    // examples/bookshelf/project.yaml を OS のテンポラリディレクトリへコピーして使う。
+    // 副作用（kidori.schema.json / *.out/）をリポジトリ外に隔離するため、
+    // examples/bookshelf/bookshelf.kidori.yaml を OS のテンポラリディレクトリへ
+    // コピーして使う（命名規約 *.kidori.yaml。本テストは保存経路・手動ビルド
+    // 経路を検証しており、内容判定の救済経路は対象外のため）。
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kidori-activation-"));
-    projectPath = path.join(tmpDir, "project.yaml");
-    fs.copyFileSync(path.join(repoRoot, "examples/bookshelf/project.yaml"), projectPath);
+    projectPath = path.join(tmpDir, "bookshelf.kidori.yaml");
+    fs.copyFileSync(
+      path.join(repoRoot, "examples/bookshelf/bookshelf.kidori.yaml"),
+      projectPath,
+    );
 
     __setWorkspaceFolders([{ uri: Uri.file(tmpDir), name: "test", index: 0 }]);
     // PNG 生成（resvg）を無効化して高速化する。

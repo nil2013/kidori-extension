@@ -1,4 +1,7 @@
-# yaml-language-server: $schema=./project.schema.json
+# VS Code では kidori 拡張がファイルごとにスキーマを供給するため、モードラインは不要。
+# VS Code 以外のエディタ・エージェントで使う場合は `kidori init` で kidori.schema.json を
+# 生成し、次の行の先頭の "# " を外してモードラインを有効化する:
+# # yaml-language-server: $schema=./kidori.schema.json
 #
 # 書棚（設計メモ）
 # ------------------------------------------------------------
@@ -6,7 +9,7 @@
 # SPECS.md §4a の掲載例は側板長さが原材長を超える不整合な数値だったため、
 # ここでは実際に置ける寸法（幅250×奥行900の書棚）に直して自己整合させている。
 # kerf・edgeTrimは仮値。手持ち丸鋸の刃厚を実測したら settings.kerf を更新すること。
-meta: { project: 書棚, units: mm, schemaVersion: "0.2" }
+meta: { project: 書棚, units: mm, schemaVersion: "0.3" }
 
 settings:
   kerf: 3            # 鋸刃厚（mm、仮値）
@@ -17,10 +20,12 @@ settings:
   selectedPlan: null # 案を確定したらプレビューの「この案を採用」または `kidori select A`
 
 stocks:
+  # preset は規格材マスタの来歴キー（任意のメタデータ）。ビルドは preset を解決しないので、
+  # 手持ちの材に合わせて実値を書き換えてよい（assets/stock-presets.json が実在キーの一覧）。
   # 側板用: パイン集成材の定尺（サブロク合板ではなく1820×910の集成材を使う想定）
-  - { id: pine-18, label: "パイン集成材18mm", kind: sheet, length: 1820, width: 910, thickness: 18, price: 6356 }
+  - { id: pine-18, preset: pine/18mm/sabroku, label: "パイン集成材18mm", kind: sheet, length: 1820, width: 910, thickness: 18, price: 6356 }
   # 棚板用: 1x4材 6F
-  - { id: 1x4-6f, label: "1×4材 6F", kind: bar, length: 1820, width: 89, thickness: 19, price: 382 }
+  - { id: 1x4-6f, preset: spf/1x4/6f, label: "1×4材 6F", kind: bar, length: 1820, width: 89, thickness: 19, price: 382 }
 
 parts:
   # 側板2枚。最下段棚を受ける通し溝と、配線用の止め溝を1本ずつ入れている。
