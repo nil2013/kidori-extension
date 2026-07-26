@@ -957,6 +957,145 @@ describe("U-PIPE: settings/stocks/parts の式解決（既存挙動の保存つ�
   });
 });
 
+// ---------------------------------------------------------------------------
+// U-RESOLVED-FIX: error があっても resolved を空にしない（Supervisor 裁定 D1/D2）。
+//
+// SPECS.md §3b:100「正常な式を含めて resolvedValues を JSON に併記する」に
+// "error のないファイルに限る" という条件節は無い。従来の実装は
+// `loadProjectFromRaw` の最終 return（error 分岐）が常に `resolved: {}` を
+// 返していたため、error が1件でもあれば正常に解決済みの式まで全損していた
+// （kidori check --resolved の主要な使用場面である「編集中＝error が常態」の
+// ファイルでほぼ常に発生する）。
+// ---------------------------------------------------------------------------
+
+describe("U-PIPE D1: error（解決フェーズ到達後）があっても resolved には成功した式が残る", () => {
+  it("1件の error（部材が原材に収まらない・式ではないフィールド由来）＋複数の正常な式がある場合、正常な式は trace に残る", () => {
+    const data = minimalProject();
+    data.settings.kerf = "1 + 2"; // 3（正常な式。従来の既定値と同じ値にして他の検証への影響を避ける）
+    data.vars = { extra: 50 };
+    data.parts[0].length = "550 + $extra"; // 600（正常な式。bar 1x4-6f の可用長 1810 に収まる）
+    data.parts[1].length = 5000; // ply-12（1820mm）に収まらない = geometry error（式ではないので trace 対象外）
+
+    const { project, issues, resolved } = loadProjectFromRaw(data);
+
+    // project は従来通り null のまま（D1 は resolved の中身にだけ手を入れる。project の
+    // null 化は変えない）。
+    expect(project).toBeNull();
+    expect(
+      issues.some((i) => i.severity === "error" && i.path === "parts[1].length"),
+    ).toBe(true);
+
+    // D1 適用前はここが常に {} だった（バグ）。正常に解決された式は残るべき。
+    expect(resolved!["parts[0].length"]).toEqual({ expression: "550 + $extra", value: 600 });
+    expect(resolved!["settings.kerf"]).toEqual({ expression: "1 + 2", value: 3 });
+  });
+});
+
+describe("U-PIPE D2: 有限性ガード（NaN の trace 漏れ防止）", () => {
+  /**
+   * marks[].x の位置式が、汚染経路（唯一。Supervisor のコード追跡で特定済み）を通って
+   * NaN になるケース: `beam-top.length` の式解決が失敗 → `resolveMarkAxisSpans` が
+   * その NaN を `xSpan` として返す → 揃えエイリアス `right`（`axisSpan - size`）が
+   * NaN を計算する → `evaluateExpr` 自体は構造的に ok（alias/演算は成立している）
+   * だが値が NaN。
+   *
+   * `y: top` は同じ mark でも `effectiveWidth`（`beam-top.length` に非依存）を軸長に
+   * 使うため汚染されない対照として置く。
+   */
+  function markProjectWithBrokenLength(): any {
+    return {
+      meta: { project: "テスト治具", units: "mm", schemaVersion: SUPPORTED_SCHEMA_VERSION },
+      vars: { inset: 50 },
+      stocks: [
+        { id: "2x4-6f", label: "2x4材", kind: "bar", length: 1820, width: 89, thickness: 38 },
+      ],
+      parts: [
+        { id: "leg", label: "足", stock: "2x4-6f", length: 800 },
+        // 根本原因: 未定義の変数参照。resolveRequiredNum は NaN を返し、issues に
+        // error を1件積む（trace には載らない。既存の ok:false 分岐）。
+        { id: "beam-top", label: "天板", stock: "2x4-6f", length: "$missingVar + 100" },
+      ],
+      assemblies: [
+        {
+          id: "uma-1",
+          label: "ウマ",
+          contains: { leg: 2, "beam-top": 1 },
+          marks: [
+            {
+              on: "beam-top",
+              face: "front",
+              ref: "leg",
+              x: "right - 40",
+              y: "top",
+              note: "test",
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it("NaN 汚染した位置式（x）は trace に載らず、汚染していない側（y）は載る", () => {
+    const { project, resolved } = loadProjectFromRaw(markProjectWithBrokenLength());
+
+    expect(project).toBeNull();
+    expect(resolved!["assemblies[0].marks[0].x"]).toBeUndefined();
+    expect(resolved!["assemblies[0].marks[0].y"]).toBeDefined();
+    expect(Number.isFinite(resolved!["assemblies[0].marks[0].y"]!.value)).toBe(true);
+  });
+
+  it("ガードで trace をスキップしても根本原因（未定義の変数）を二重報告しない（D3）", () => {
+    const { issues } = loadProjectFromRaw(markProjectWithBrokenLength());
+
+    // 根本原因（"$missingVar" 未定義）は parts[1].length に1件だけ報告される。
+    // D2 の有限性ガード（trace 書き込みの skip）自体は issues.push を一切行わない
+    // （実装上、trace[path] = ... の代入を条件で囲んだだけであり、else 節に
+    // issues.push は無い）ため、ここが2件以上になることはない。
+    const undefinedVarErrors = issues.filter(
+      (i) => i.severity === "error" && i.message.includes("$missingVar"),
+    );
+    expect(undefinedVarErrors).toEqual([
+      {
+        path: "parts[1].length",
+        message: "未定義の変数です: '$missingVar'",
+        severity: "error",
+      },
+    ]);
+
+    // 注意（このテストではあえて検証しない既知の別経路）: 幾何フェーズの
+    // checkMarksGeometry は mark.x が NaN であること自体を独立に検出し、
+    // "assemblies[0].marks[0].x" に別文言（"0以上でなければ"・"面外"）の error を
+    // 追加で出す。これは D1/D2 の変更前から存在する既存動作であり（git stash で
+    // 変更前の loader.ts に対して同一 fixture を実行し、同じ2件が出ることを実機で
+    // 確認済み）、D2 の有限性ガード（trace 書き込みの skip）が原因ではない。
+    // D3 が禁じる「二重報告」は根本原因（"$missingVar" 未定義）の再報告であり、
+    // 上のアサーションはそれを直接検証している。
+  });
+});
+
+describe("U-PIPE D1: 解決フェーズに到達する前の早期 return では resolved は空のまま", () => {
+  it("層1（JSON Schema）の enum 違反は resolved: {}（式解決フェーズに到達していない）", () => {
+    const data = minimalProject();
+    data.settings.selectedPlan = "D"; // 層1の enum 違反（既存テスト: 713行目付近と同じ fixture）
+
+    const { project, resolved } = loadProjectFromRaw(data);
+
+    expect(project).toBeNull();
+    expect(resolved).toEqual({});
+  });
+
+  it("参照フェーズ（存在しない stock 参照）は resolved: {}（式解決フェーズに到達していない）", () => {
+    const data = minimalProject();
+    data.stocks = [];
+    data.parts = [{ id: "p1", label: "p1", qty: 1, stock: "does-not-exist", length: 100 }];
+
+    const { project, resolved } = loadProjectFromRaw(data);
+
+    expect(project).toBeNull();
+    expect(resolved).toEqual({});
+  });
+});
+
 describe("U-PIPE D3: usedElsewhere の配線（フィールド式からのみ参照される変数）", () => {
   it("フィールド式（parts[].length）からのみ参照される変数は未使用 hint にならない", () => {
     const data = minimalProject();

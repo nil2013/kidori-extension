@@ -17,6 +17,7 @@ import { LineCounter, parseDocument } from "yaml";
 
 import { composeSchemaJson } from "../core/composeSchema";
 import type { Issue } from "../core/errors";
+import type { ResolutionTrace } from "../core/expr";
 import { loadProjectFromRaw, readRaw } from "../core/loader";
 import { resolveIssueLine } from "./positions";
 import { UsageError } from "./usageError";
@@ -38,12 +39,53 @@ function parseSingleFileArg(command: string, args: string[]): string {
   return positional[0];
 }
 
+/**
+ * `check` 専用の引数解析: 単一のファイルパス＋任意の `--resolved` フラグ
+ * （SPECS.md §3b:100）。`--resolved` 以外の `-` 始まりの引数は従来どおり拒否する
+ * （`schema` は `parseSingleFileArg` のまま・オプションを一切増やさない）。
+ */
+function parseCheckArgs(args: string[]): { filePath: string; resolved: boolean } {
+  const positional: string[] = [];
+  let resolved = false;
+  for (const a of args) {
+    if (a === "--resolved") {
+      resolved = true;
+    } else if (a.startsWith("-")) {
+      throw new UsageError(`check に不明なオプションが指定されました: ${a}`);
+    } else {
+      positional.push(a);
+    }
+  }
+  if (positional.length === 0) {
+    throw new UsageError("check には対象ファイルを指定してください");
+  }
+  if (positional.length > 1) {
+    throw new UsageError("check に指定できるファイルは1つだけです");
+  }
+  return { filePath: positional[0], resolved };
+}
+
 /** `kidori check` の1件の診断（SPECS.md §3b: ファイル・行・severity・メッセージ ＋ path）。 */
 export interface CheckDiagnostic {
   path: string;
   line: number | null;
   severity: "error" | "warning" | "hint";
   message: string;
+}
+
+/**
+ * `--resolved` 指定時に併記する1件の解決値（SPECS.md §3b:100 の逐語:
+ * 「`resolvedValues`（`path`・`expression`・`value`・`unit: mm`）」）。
+ *
+ * 対象は式が書かれたフィールドのみ（設計裁定・Supervisor 確定済み）。リテラル
+ * 数値は原式を持たないため対象外（SPECS.md §4d:274「原式と解決値」）。行番号は
+ * 意図的に含めない（詳細は runCheck の実装コメント参照）。
+ */
+export interface ResolvedValueEntry {
+  path: string;
+  expression: string;
+  value: number;
+  unit: "mm";
 }
 
 /**
@@ -54,6 +96,9 @@ export interface CheckDiagnostic {
  * `hintCount` に計上し、`warningCount` には混ぜない（hint は warning より弱い
  * 情報であり、既存の warningCount 消費者に「warning が増えた」と誤解させない
  * ため）。
+ *
+ * `resolvedValues` は `--resolved` 指定時のみ存在するオプショナルフィールド
+ * （既存の出力契約を壊さないため。SPECS.md §3b:100）。
  */
 export interface CheckResult {
   file: string;
@@ -61,6 +106,24 @@ export interface CheckResult {
   warningCount: number;
   hintCount: number;
   diagnostics: CheckDiagnostic[];
+  resolvedValues?: ResolvedValueEntry[];
+}
+
+/**
+ * `ResolutionTrace`（`src/core/expr.ts`）を `--resolved` 出力用の配列へ変換する。
+ *
+ * 並び順は `path` の辞書順（JS の既定の文字列比較。ロケール依存を避けるため
+ * `localeCompare` ではなく単純な `<`/`>` 比較を使う）に固定する。`ResolutionTrace`
+ * は `Record`（内部のパイプライン各段が書き込んだ挿入順）であり、その挿入順を
+ * そのまま漏らすと将来 loader.ts 側のパイプライン順序を変えただけで CLI の出力
+ * 順が変わってしまう。機械可読な出力は安定した順序を持つべき、という要件
+ * （§3b:100 の意図）に対し、path 文字列という利用者から見える安定なキーで
+ * ソートすることで、内部実装の変更から独立させる。
+ */
+function toResolvedValues(trace: ResolutionTrace): ResolvedValueEntry[] {
+  return Object.entries(trace)
+    .map(([path, t]) => ({ path, expression: t.expression, value: t.value, unit: "mm" as const }))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
 /**
@@ -83,6 +146,23 @@ export interface CheckResult {
  * 例外が `linePos` を持つ場合のみ埋め、持たない場合（JSON.parse 等）は
  * null に縮退させる（設計裁定 D2: 行番号のでっち上げ禁止）。
  *
+ * `--resolved`（SPECS.md §3b:100）指定時は、`resolved`（`ResolutionTrace`。
+ * `src/core/loader.ts` の `loadProjectFromRaw` が式解決の副産物として返す
+ * 「原式 → 解決値」対応表。U-PIPE で導入済み）を `resolvedValues` として
+ * JSON に併記する。指定しない場合は既存の出力契約を変えないためフィールド
+ * 自体を出さない。診断（error/warning/hint）の有無とは独立に出す（§3b:100
+ * 「診断が0件でも」）。exit code の規約（0/1/2）は `--resolved` の有無で変えない。
+ *
+ * error 時の挙動: `loadProjectFromRaw` は severity "error" の Issue が1件でも
+ * あっても、式解決フェーズに到達済みであれば、そこまでに解決できた式は
+ * `resolved` に残して返す（loader.ts の設計裁定 D1。SPECS.md §3b:100「正常な式を
+ * 含めて」に "error のないファイルに限る" という条件節は無い）。したがって
+ * error があっても解決済みの式があれば `resolvedValues` はそれを反映する。
+ * 一方、式解決フェーズ自体に届く前の error（層1・参照フェーズ等）では
+ * `loadProjectFromRaw` はまだ何も解決していないため `resolved` は自然に空になる。
+ * 構文エラー（catch 節。`loadProjectFromRaw` 自体を呼べていない）も同様に
+ * 空配列にする（何も解決していないため）。
+ *
  * @param log JSON 出力先（既定 `console.log`）。テストから差し替え可能にする。
  * @param logError stderr 相当の出力先（既定 `console.error`）。
  */
@@ -91,7 +171,7 @@ export function runCheck(
   log: (s: string) => void = (s) => console.log(s),
   logError: (s: string) => void = (s) => console.error(s),
 ): number {
-  const filePath = parseSingleFileArg("check", args);
+  const { filePath, resolved: showResolved } = parseCheckArgs(args);
   const target = path.resolve(filePath);
 
   let text: string;
@@ -105,11 +185,15 @@ export function runCheck(
   }
 
   let diagnostics: CheckDiagnostic[];
+  let resolvedTrace: ResolutionTrace = {};
   try {
     // D4: readRaw は loader.ts と同一実装（.json は JSON.parse、それ以外は yaml の
     // parse）。ここで独自にパースを書き直さない。
     const raw = readRaw(target);
-    const { issues } = loadProjectFromRaw(raw, { baseDir: path.dirname(target) });
+    const { issues, resolved } = loadProjectFromRaw(raw, { baseDir: path.dirname(target) });
+    // `resolved` は型上省略可能（test/cli/checkHint.test.ts の vi.mock が
+    // `{ project, issues }` のみを返すため。loader.ts のコメント参照）。
+    resolvedTrace = resolved ?? {};
 
     // D1: 行番号は CLI 側の写像層（parseDocument + LineCounter）で得る。
     // loader.ts は改造しない。yaml の parseDocument は JSON もサブセットとして
@@ -153,6 +237,9 @@ export function runCheck(
     hintCount,
     diagnostics,
   };
+  if (showResolved) {
+    result.resolvedValues = toResolvedValues(resolvedTrace);
+  }
   log(JSON.stringify(result, null, 2));
   // exit code は severity === "error" の有無のみで決める（設計裁定 D3）。
   // warning・hint はどちらも error 扱いにしない（否定形 "!== error" ではなく

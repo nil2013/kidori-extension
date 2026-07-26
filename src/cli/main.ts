@@ -40,7 +40,8 @@ const USAGE = `使い方:
   kidori build  [<name>.kidori.yaml] [--out DIR] [--no-png] [--scale N]
   kidori watch  [<name>.kidori.yaml] [--out DIR] [--no-png] [--scale N]
   kidori select <A|B|C|X|null> [<name>.kidori.yaml]
-  kidori check  <name>.kidori.yaml                     構造化診断を JSON で出力（ビルドなし）
+  kidori check  <name>.kidori.yaml [--resolved]        構造化診断を JSON で出力（ビルドなし）
+                                                        --resolved: 解決済み式（resolvedValues）も併記
   kidori schema <name>.kidori.yaml                     このファイル用の合成済みスキーマを stdout へ出力`;
 
 interface CliOptions {

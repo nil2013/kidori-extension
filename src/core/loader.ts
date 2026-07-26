@@ -648,7 +648,18 @@ function resolveRequiredNum(
       issues.push(...result.diagnostics.map(issueFromExprDiagnostic));
       return NaN;
     }
-    trace[path] = result.trace;
+    // D2（有限性ガード）: `evaluateExpr` は構造的に成功（ok: true）していても、
+    // 揃えエイリアス（marks[].x/y）が別フィールドの解決失敗由来の NaN な
+    // axisSpan/size を参照した場合、返る value は NaN になりうる
+    // （resolveMarkAxisSpans/resolveMarkSize が失敗フィールドの NaN を伝播させるため。
+    // 唯一の汚染経路。詳細は報告参照）。その NaN は「この式自体の解決成功」を
+    // 意味しないため trace には載せない。根本原因（参照先フィールドの解決失敗）は
+    // 既にそちら側で Issue として報告済みなので、ここで追加の診断は出さない
+    // （二重報告の禁止。D3）。`JSON.stringify(NaN)` が `null` になり
+    // `value: null` という契約外の JSON を生む事故も、このガードで防ぐ。
+    if (Number.isFinite(result.value)) {
+      trace[path] = result.trace;
+    }
     return result.value;
   }
   return NaN;
@@ -1986,9 +1997,16 @@ export function loadProjectFromRaw(
   /**
    * 解決に成功した式の「原式 → 解決値」対応表（D2。SPECS.md §4d「解決値の可視化」・
    * `kidori check --resolved` の `resolvedValues` の元データ）。key は
-   * `formatJsonPath` と同じ path 文法（`vars.<名前>` を含む）。**解決に成功した
-   * 式のみ**を持つ（数値直書きのフィールドは載らない。失敗は `issues` の Issue に
-   * なる）。project が null のとき、または式を1つも使っていないときは空オブジェクト。
+   * `formatJsonPath` と同じ path 文法（`vars.<名前>` を含む）。**有限値へ解決に
+   * 成功した式のみ**を持つ（数値直書きのフィールドは載らない。解決失敗は `issues`
+   * の Issue になる。解決自体は成功しても値が NaN になる場合＝失敗フィールド由来の
+   * NaN が marks 位置式の揃えエイリアスに伝播したケースも、有限性ガード
+   * [`resolveRequiredNum`] により載らない）。project が null でも、式解決フェーズ
+   * まで到達していれば（＝層1・参照フェーズより後で発生した error）その時点までに
+   * 解決済みの式は載る（SPECS.md §3b:100「正常な式を含めて」。error のあるファイル
+   * でも trace を全捨てしない設計裁定）。式解決フェーズ自体に到達する前の早期
+   * return（root 型不正・stocksFile 解決・層1・参照フェーズの各 error）、または
+   * 式を1つも使っていないときは空オブジェクト。
    *
    * 型上は省略可能にしている（実際の呼び出しでは常に返す。省略可能にしている
    * 理由: `test/cli/checkHint.test.ts` が `vi.mock` で本関数の戻り値を
@@ -2122,7 +2140,13 @@ export function loadProjectFromRaw(
     ...otherIssues,
   ];
   if (allIssues.some((i) => i.severity === "error")) {
-    return { project: null, issues: allIssues, resolved: {} };
+    // D1: error があっても、この時点までに解決フェーズ（式解決 + marks 位置解決）は
+    // 実行済みであり、trace には成功した式の分だけが載っている（失敗した式は
+    // resolveRequiredNum が issues 側に積むだけで trace には書かない。NaN 汚染は
+    // D2 の有限性ガードで別途防いでいる）。project は不整合になりうるため null に
+    // するが、trace は「project が壊れている＝解決情報も無意味」ではないため、
+    // ここで {} に潰さずそのまま返す（SPECS.md §3b:100「正常な式を含めて」）。
+    return { project: null, issues: allIssues, resolved: trace };
   }
   return { project: resolvedProject, issues: allIssues, resolved: trace };
 }
