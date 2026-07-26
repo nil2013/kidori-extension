@@ -63,7 +63,7 @@ describe("assemblyTemplateBody の既定値展開が検証を通る（SPECS.md �
     // §4c の実例（test/core/assemblies.test.ts の SPECS_4C_YAML）と同じ
     // meta/stocks を補う。スニペットの既定 stock id "2x4-6f" と一致させる。
     const fullYaml =
-      'meta: { project: テスト, units: mm, schemaVersion: "0.4" }\n\n' +
+      'meta: { project: テスト, units: mm, schemaVersion: "0.5" }\n\n' +
       "stocks:\n" +
       '  - { id: 2x4-6f, preset: spf/2x4/6f, label: "2×4材 6F", kind: bar, length: 1820, width: 89, thickness: 38, price: 598 }\n\n' +
       resolved +

@@ -107,11 +107,11 @@ kidori ファイルの判定は2系統ある: (i) 命名規約 `*.kidori.yaml` /
 
 ## 5. 正本データ（`*.kidori.yaml`）
 
-トップレベルは `meta` / `settings` / `stocks` / `parts` の4区画に、任意の `stocksFile`（外部 stocks 参照）を加えた構成。単位は mm 固定。詳細は SPECS.md §4 を参照。
+トップレベルは `meta` / `settings` / `stocks` / `parts` の4区画に、任意の `stocksFile`（外部 stocks 参照）・任意の `vars`（名前付き設計値。下記「`vars`・寸法ミニ式」参照）を加えた構成。単位は mm 固定。詳細は SPECS.md §4 を参照。
 
 ```yaml
 # yaml-language-server: $schema=./kidori.schema.json
-meta: { project: 書棚, units: mm, schemaVersion: "0.4" }
+meta: { project: 書棚, units: mm, schemaVersion: "0.5" }
 
 settings:
   kerf: 3                    # 鋸刃厚（mm）
@@ -142,7 +142,8 @@ parts:
 
 主なフィールド:
 
-- `meta.schemaVersion`: 現行は `"0.4"`。不一致は**警告のみでビルドは継続する**（旧バージョンで書かれたファイルの救済経路）。
+- `meta.schemaVersion`: 現行は `"0.5"`。不一致は**警告のみでビルドは継続する**（旧バージョンで書かれたファイルの救済経路）。0.5 は SPECS.md §4d の寸法ミニ式・`vars` 区画が追加されたことによる改版で、0.4 以前のファイルは（`vars`／式を使っていなければ）そのまま有効な 0.5 のファイルでもある。
+- `vars`: ファイル内で共有する名前付き設計値（mm）。下記「`vars`・寸法ミニ式」参照。
 - `stocksFile`: 外部 stocks ファイルへの相対パス参照。**単段のみ**（参照先がさらに `stocksFile` を持つとエラー）。インラインの `stocks` と `id` が衝突した場合はインラインが勝つ。
 - `stocks[].preset`: 規格材マスタの来歴キー（任意）。ビルドは一切解決しない。実値フィールドは `preset` の有無に関わらず全て必須。
 - `settings.rank` / `settings.exact` / `settings.selectedPlan`: 推奨案・厳密探索・案採用の設定（下記§「採用案の無効化」参照）。
@@ -157,6 +158,10 @@ parts:
 例（`examples/uma/uma.kidori.yaml`。作業用のウマ2脚を、足の組み方だけが違う2構成として表現している）:
 
 ```yaml
+vars:
+  inset: 50            # 天板端から足当たり面までの基本の余白（mm）
+  matingAllowance: 38  # 互い違いに噛み合わせるために追加で確保する幅（mm）
+
 parts:
   - { id: leg,       label: 足,     stock: 2x4-6f, length: 800 }
   - { id: beam-top,  label: 天板,   stock: 2x4-6f, length: 850 }
@@ -167,25 +172,43 @@ assemblies:
     label: ウマ1号機（足が内側）
     contains: { leg: 2, beam-top: 1, beam-foot: 1 }
     marks:
-      - { on: beam-top, face: front, ref: leg, x: 50, note: 足当たり面 }
+      - { on: beam-top, face: front, ref: leg, x: $inset, note: 足当たり面 }
   - id: uma-2
     label: ウマ2号機（互い違いに噛み合う側）
     contains: { leg: 2, beam-top: 1, beam-foot: 1 }
     marks:
-      - { on: beam-top, face: front, ref: leg, rot: 90, x: 120, y: top, note: 足当たり面 }
+      - { on: beam-top, face: front, ref: leg, rot: 90, x: "$inset + $matingAllowance", y: top, note: 足当たり面 }
 ```
 
-- **`assemblies[].contains`**: 形状 id → 個数のマップ。「このひと組（assembly）に、どの形状が何個入るか」の宣言。`leg`/`beam-top`/`beam-foot` は `parts` に `qty` を書いていない（省略時は全 assembly の `contains` 合計から導出される。上の例なら `leg` は 2×2=4 個）。割付は導出後の合計数だけを見るため、`beam-top` を「天板1」「天板2」のように形状として複製する必要はない。
+- **`assemblies[].contains`**: 形状 id → 個数のマップ。「このひと組（assembly）に、どの形状が何個入るか」の宣言。`leg`/`beam-top`/`beam-foot` は `parts` に `qty` を書いていない（省略時は全 assembly の `contains` 合計から導出される。上の例なら `leg` は 2×2=4 個）。割付は導出後の合計数だけを見るため、`beam-top` を「天板1」「天板2」のように形状として複製する必要はない。**`contains` の個数自体はリテラル値限定**（式不可）。
 - **`assemblies[].marks`**: 切削を伴わない当たり面・位置のマーキング（取り付けシロ）。`on`（対象形状 id）・`face`・`x`/`y`（領域左下角、省略時0）を指定し、領域の大きさは `w`/`h` を直接書くか、`ref: <形状id>` で相手部材の断面寸法（厚み×実効幅）から自動導出させる。上の例の `ref: leg` は 2×4 材（厚み38×幅89）の断面を指し、`leg` の寸法を変えれば追従する。marks は**加工指示図にのみ**破線／ハッチングで描画され（木取り図には出ない）、割付・歩留まり・カット回数には一切影響しない。
-- **`marks[].rot`**（`0`／`90`、既定 `0`）: 当たり面の面内回転。`ref` 導出時に断面の幅・厚みを w/h のどちらに割り当てるかを確定するほか、`w`/`h` の直接指定にも同様に適用される（swap する）。上の例の `uma-2` は互い違いに噛み合う「ねじれ」の組み方で、足の木口断面を `rot: 90` で面内回転させて天板に当てている。
-- **`marks[].x`／`marks[].y` の端揃えエイリアス**: 数値の代わりに `x: left`／`x: center`／`x: right`、`y: bottom`／`y: center`／`y: top` を指定できる。近い側の端（`left`/`bottom`）は `0`、遠い側の端（`right`/`top`）は面寸法から領域寸法（`rot` 適用後の w/h）を引いた位置に解決される。`center` は面寸法の1/2ではなく、`(面寸法 − 領域寸法) ÷ 2` に解決される（marks は矩形領域なので、点ではなく領域全体を中央に揃える）。上の例の `y: top` は天板の上端に足当たり面を揃える指定で、参照先（`leg`）の寸法変更にも自動追従する。
+- **`marks[].rot`**（`0`／`90`、既定 `0`。**リテラル限定**、式不可）: 当たり面の面内回転。`ref` 導出時に断面の幅・厚みを w/h のどちらに割り当てるかを確定するほか、`w`/`h` の直接指定にも同様に適用される（swap する）。上の例の `uma-2` は互い違いに噛み合う「ねじれ」の組み方で、足の木口断面を `rot: 90` で面内回転させて天板に当てている。
+- **`marks[].x`／`marks[].y` の端揃えエイリアス**: 数値・`$vars`・式の代わりに `x: left`／`x: center`／`x: right`、`y: bottom`／`y: center`／`y: top` を指定できる。近い側の端（`left`/`bottom`）は `0`、遠い側の端（`right`/`top`）は面寸法から領域寸法（`rot` 適用後の w/h）を引いた位置に解決される。`center` は面寸法の1/2ではなく、`(面寸法 − 領域寸法) ÷ 2` に解決される（marks は矩形領域なので、軸長の中点ではなく領域全体を中央に揃える）。上の例の `y: top` は天板の上端に足当たり面を揃える指定で、参照先（`leg`）の寸法変更にも自動追従する。この端揃えエイリアスと式を組み合わせられる「位置式」（`"right - 40"` 等）については下記「`vars`・寸法ミニ式」を参照。
 - **assembly ごとの変種面**: 同じ形状でも assembly によってマーク位置が異なる場合（上の例の `beam-top` は `uma-1` と `uma-2` でマーク位置 `x` が違う）、加工指示図は assembly 単位の変種面として出力される（`parts/uma-1-beam-top.svg` / `parts/uma-2-beam-top.svg`）。マークを持たない形状（上の例の `leg`・`beam-foot`）は従来どおり形状ごとに1面（`parts/leg.svg` 等）。
 - **一括挿入**: コマンドパレットの「kidori: 構成を挿入（parts＋assembly の雛形）」で、上記と同じ形（`leg`/`beam-top`/`beam-foot` 相当）の `parts`＋`assembly` の雛形をタブストップ付きスニペットとして挿入できる。展開後はただの YAML で、マクロ的な参照や独自構文は残らない。
+
+### `vars`・寸法ミニ式（名前付き設計値と導出式）
+
+数値へ畳み込んだ結果だけでなく、**なぜその寸法になるかという導出過程を正本に残す**ための機構。上の例の `x: "$inset + $matingAllowance"` は `88` と書いても割付・図面上の結果は同じだが、「基本の余白（`inset`）に噛み合い代（`matingAllowance`）を足した位置」という設計意図が正本から読み取れ、`vars` の値を変えれば依存箇所すべてに追従する。
+
+- **`vars`（名前付き設計値）**: トップレベルの任意区画。`$名前` で参照する。参照は**同一ファイル内に閉じる**（他ファイルの `vars` は見えない）。変数名は `[A-Za-z_][A-Za-z0-9_]*`（大文字小文字を区別）。**未定義の変数を参照するとエラー**、**循環参照（`a: "$b"` / `b: "$a"` 等）もエラー**、**どこからも参照されていない変数は hint**（削除候補として通知されるだけで、ビルドは止まらない）。
+- **式は2種類**（区別は仕様上の意味論であり、フィールドごとに実行時に判定される）:
+  - **文脈非依存式**: 数値リテラル・`$vars` 参照・`+`/`-` のみ（例: `"$inset + $matingAllowance"`、`"$inset - 10"`）。
+  - **位置式**: 文脈非依存式に、対象軸の揃えエイリアスを加えたもの。**`marks[].x`／`marks[].y` のみ**に限定される（例: `"right - 40"`）。`hole.x`/`hole.y`・`groove.pos` は数値と中心・基準点の意味が対応するため、揃えエイリアスは使えない（文脈非依存式のみ）。
+  - **できないこと（境界）**: **乗除・括弧・関数呼び出し・条件分岐・繰り返し・他部材フィールドの直接参照は一切許可しない**。`qty × 単価` のような計算や `abs()`/`min()` 等の関数は書けない。より強い表現力が要る箇所は `center` エイリアス、`ref`（相手部材の断面寸法を自動導出）、将来の `component`/joints に委ねる設計であり、抜け漏れではない。
+- **式を受け付けるフィールド**: `vars.*`、`settings.kerf`／`settings.edgeTrim`、`stocks[].length`／`width`／`thickness`、`parts[].length`／`width`、`groove` の `pos`／`width`／`depth`／`from`／`to`、`hole` の `x`／`y`／`dia`／`depth`、`assemblies[].marks[]` の `x`／`y`／`w`／`h`（`x`／`y` のみ位置式、他は文脈非依存式）。これが完全な列挙で、他のフィールドは式不可（詳細な型・description は `kidori schema <ファイル>` で確認できる）。
+- **リテラル限定のフィールド（式不可）**: `stocks[].price`、`parts[].qty`、`assemblies[].contains` の個数、`settings.candidates`、`rot`（`parts[].rot`／`marks[].rot`）、ID・ラベル・enum 全般、`settings.selectedPlan`。`price`/`qty` は乗除を要する用途（単価×数量、税率、セット数×個数）が多く、加減算限定のミニ式では実用に足りないため意図的に対象外にしている（`qty` は代わりに `assemblies.contains` の合計から導出する経路がある）。
+- **幾何境界検査（marks）**: 最終解決後の値に対し、`w > 0`・`h > 0`・`x ≥ 0`・`y ≥ 0`・`x + w ≤` 対象面の length・`y + h ≤` 対象面の width を検査し、違反は **error**。式の途中値が負でも最終値が有効なら通る。逆に `right`/`top` の解決結果が負になる（領域が面よりはみ出す）場合も error になる。
+- **解決値の確認**:
+  - VS Code 拡張は式の上にカーソルを置くとホバーで `"$inset + $matingAllowance" → 88 mm` のように解決値を表示する（保存前の編集中バッファに対しても即時に評価する）。
+  - CLI は `kidori check --resolved <ファイル>` で、原式と解決値を `resolvedValues`（`path`・`expression`・`value`・`unit: mm`）として機械可読に取得できる。**診断（error/warning）の有無とは独立**に出力されるため、他の箇所に error があっても、解決に成功した式の `resolvedValues` は出る（詳細は「6. CLI」参照）。
+- **`schemaVersion` 0.5**: `vars`・寸法ミニ式は `meta.schemaVersion: "0.5"` で導入された（§「正本データ」参照）。`vars`／式を使わなければ 0.4 以前のファイルはそのまま有効な 0.5 のファイルでもある（不一致は警告のみで、ビルドは継続する）。
 
 ### 採用案の無効化（設計変更後の再割付）
 
 `settings.selectedPlan` を設定した後に割付へ影響する編集（`parts`・`stocks`・`settings.kerf` 等）を行うと、記録済みの採用案は**設計変更後の割付とは無関係**とみなされる。次回ビルドは `selectedPlan` の指定を無視して全案（A/B/C、条件次第で X）を再生成し、`settings.selectedPlan` の位置に警告 Issue を出す。
 
+- **`vars` の編集も無効化に効く**: フィンガープリントは式解決**後**の実測値（`parts[].length`/`width` 等）から計算されるため、`vars` を編集して依存する `parts`/`stocks` の寸法が実際に変わった場合は無効化される。**ただし原式が変わっても解決値が同じなら無効化しない**（例: `"$inset + $matingAllowance"` を `"88"` に書き換えても、値が変わらなければ採用案はそのまま有効）。`marks[].x`/`y` 等、割付に関与しないフィールドだけに使われている `vars` を変更しても無効化されない（marks は割付に一切影響しないため）。
 - `selectedPlan` の**値自体は自動では書き換えられない**（正本の書き換えは人の操作に限る）。再選択するには、改めてプレビューの「この案を採用」または `kidori select A` を実行する。
 - 採用の有効性は、割付結果のフィンガープリントと `<ファイル名>.out/summary.json` に記録された採用時のフィンガープリントを突き合わせて判定する。
 - **既知の限界**: `<ファイル名>.out/` は `.gitignore` 対象（派生物）なので、これを削除してから再ビルドすると、採用の記録も消え、次のビルドが**現在の状態を採用時点として静かに再アンカーする**（無効化警告が出ないまま `selectedPlan` の値がそのまま有効化される）。設計変更の追跡を厳密にしたい場合は `<ファイル名>.out/` を不用意に削除しないこと。
@@ -205,7 +228,8 @@ kidori init   [ディレクトリ] [--with-stocks]           # ディレクト�
 kidori build  [<name>.kidori.yaml] [--out DIR] [--no-png] [--scale N]
 kidori watch  [<name>.kidori.yaml] [--out DIR] [--no-png] [--scale N]   # 変更監視して自動再ビルド
 kidori select <A|B|C|X|null> [<name>.kidori.yaml]
-kidori check  <name>.kidori.yaml                        # 構造化診断を JSON で出力（ビルドなし）
+kidori check  <name>.kidori.yaml [--resolved]           # 構造化診断を JSON で出力（ビルドなし）
+                                                         # --resolved: 解決済みの式（resolvedValues）も併記
 kidori schema <name>.kidori.yaml                        # このファイル用の合成済みスキーマを stdout へ出力
 ```
 
@@ -214,8 +238,9 @@ kidori schema <name>.kidori.yaml                        # このファイル用�
 - **対象ファイルを省略した場合**、`build`/`watch`/`select` はカレントディレクトリの `*.kidori.{yaml,yml,json}` を探索する。見つかったのが1件ならそれを使い、0件または複数件ならエラー（対象ファイルの明示を促す）。`check`/`schema` は対象ファイルの省略を受け付けず、常に明示が必要。
 - `kidori new`: `--preset <キー>` を反復指定すると、既定のサンプル部材ではなく指定した規格材マスタのキー（例: `spf/1x4/6f`）を実体化して書き出す。未知のキーを渡すとエラーで利用可能なキー一覧が表示される。
 - `kidori init`: `--with-stocks` を付けると共有 `stocks.yaml` の雛形も生成する（既定では生成しない）。生成物はすべて**冪等**（既存ファイルは書き換えず、1件ずつ結果を報告する。`.gitignore` のみ不足パターンの追記を行う）。
-- `kidori check`: **拡張ホスト API に届かないコーディングエージェント（Claude Code 等）向けの検証ループ**。ビルドせずに検証だけを実行し、`{ file, errorCount, warningCount, diagnostics: [{ path, line, severity, message }] }` という構造化 JSON を stdout に出す。検証内容は拡張内の検証（補完・ホバーと同じ意味検証層）と同一実装。`stocksFile` の参照解決やスキーマ検証、`groove.depth` の板厚超過・`groove.pos` の範囲外・`end: through` への `from`/`to` 併記といった意味検証も対象。
-  - 終了コードは `check` 専用の規約を持つ（他コマンドの一般規約とは独立）: **0**=error 診断なし（warning はあってもよく、JSON では報告される）、**1**=error 診断あり（YAML/JSON の構文エラーも診断1件として扱う）、**2**=引数エラー・ファイルが読めない（IO エラー）。CI からの利用も想定している。
+- `kidori check`: **拡張ホスト API に届かないコーディングエージェント（Claude Code 等）向けの検証ループ**。ビルドせずに検証だけを実行し、`{ file, errorCount, warningCount, hintCount, diagnostics: [{ path, line, severity, message }] }` という構造化 JSON を stdout に出す。`severity` は `"error"`／`"warning"`／`"hint"` の3値（例: 未使用の `vars`）で、`hintCount` は `warningCount` に混ぜず独立に数える。検証内容は拡張内の検証（補完・ホバーと同じ意味検証層）と同一実装。`stocksFile` の参照解決やスキーマ検証、`groove.depth` の板厚超過・`groove.pos` の範囲外・`end: through` への `from`/`to` 併記、寸法ミニ式の構文・未定義変数・循環参照・marks の幾何境界検査といった意味検証も対象。
+  - `--resolved` を付けると、原式を持つフィールドについて `resolvedValues: [{ path, expression, value, unit: "mm" }]` を併記する（例: `assemblies[1].marks[0].x` → `{ expression: "$inset + $matingAllowance", value: 88, unit: "mm" }`）。診断の有無とは独立に出力されるため、**error があっても、解決に成功した式の `resolvedValues` は出る**（式解決フェーズより前段の error でまだ何も解決していない場合は空配列になる）。
+  - 終了コードは `check` 専用の規約を持つ（他コマンドの一般規約とは独立）: **0**=error 診断なし（warning・hint はあってもよく、JSON では報告される）、**1**=error 診断あり（YAML/JSON の構文エラーも診断1件として扱う）、**2**=引数エラー・ファイルが読めない（IO エラー）。CI からの利用も想定している。
 - `kidori schema`: 当該ファイル用に、インラインの `stocks[].id` と `stocksFile` 参照先の id を動的 enum として合成した完全なスキーマをその場で stdout に出す。「静的ファイルとして読む」のではなく「問い合わせる」形にすることで、スナップショットの陳腐化を避ける。`kidori build` が書き出す `<ファイル名>.out/schema.json`（§7）と同じ合成ロジックを共有するため内容は一致する。
 - CLI は非対話を貫く（規格材の選択も `--preset` の反復指定で表現し、対話 UI は拡張層の Quick Pick に任せる）。
 - 終了コード（`check` を除く）: 0=成功、1=検証エラー・実行時エラー、2=引数エラー。

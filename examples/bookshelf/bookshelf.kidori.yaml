@@ -9,7 +9,7 @@
 # SPECS.md §4a の掲載例は側板長さが原材長を超える不整合な数値だったため、
 # ここでは実際に置ける寸法（幅250×奥行900の書棚）に直して自己整合させている。
 # kerf・edgeTrimは仮値。手持ち丸鋸の刃厚を実測したら settings.kerf を更新すること。
-meta: { project: 書棚, units: mm, schemaVersion: "0.4" }
+meta: { project: 書棚, units: mm, schemaVersion: "0.5" }
 
 settings:
   kerf: 3            # 鋸刃厚（mm、仮値）

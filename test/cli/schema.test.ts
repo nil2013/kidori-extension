@@ -49,7 +49,7 @@ function runSchemaOut(args: string[]): { exitCode: number; stdout: string; stder
 
 describe("kidori schema: 出力契約", () => {
   it("stdout は schemaJson(extractStockIds(raw)) と一致する", () => {
-    const body = `meta: { project: t, units: mm, schemaVersion: "0.4" }
+    const body = `meta: { project: t, units: mm, schemaVersion: "0.5" }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19 }
   - { id: s1, label: 板, kind: sheet, length: 1820, width: 910, thickness: 18 }
@@ -72,7 +72,7 @@ parts:
   it("stocks[].id を変えると parts[].stock の enum が追随する", () => {
     const before = write(
       "a.kidori.yaml",
-      `meta: { project: t, units: mm, schemaVersion: "0.4" }
+      `meta: { project: t, units: mm, schemaVersion: "0.5" }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19 }
 parts: []
@@ -80,7 +80,7 @@ parts: []
     );
     const after = write(
       "b.kidori.yaml",
-      `meta: { project: t, units: mm, schemaVersion: "0.4" }
+      `meta: { project: t, units: mm, schemaVersion: "0.5" }
 stocks:
   - { id: b1-renamed, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19 }
   - { id: b2, label: 棒2, kind: bar, length: 2440, width: 89, thickness: 19 }
@@ -111,7 +111,7 @@ parts: []
     const p = write(
       "project.kidori.yaml",
       `stocksFile: ./stocks.yaml
-meta: { project: t, units: mm, schemaVersion: "0.4" }
+meta: { project: t, units: mm, schemaVersion: "0.5" }
 stocks:
   - { id: local-1, label: 手元棒, kind: bar, length: 1820, width: 89, thickness: 19 }
 parts: []
@@ -138,7 +138,7 @@ parts: []
     write(
       path.join("proj", "project.kidori.yaml"),
       `stocksFile: ../shared/stocks.yaml
-meta: { project: t, units: mm, schemaVersion: "0.4" }
+meta: { project: t, units: mm, schemaVersion: "0.5" }
 stocks: []
 parts: []
 `,
@@ -163,7 +163,7 @@ parts: []
     const p = write(
       "project.kidori.yaml",
       `stocksFile: ./missing.yaml
-meta: { project: t, units: mm, schemaVersion: "0.4" }
+meta: { project: t, units: mm, schemaVersion: "0.5" }
 stocks:
   - { id: local-1, label: 手元棒, kind: bar, length: 1820, width: 89, thickness: 19 }
 parts: []
@@ -180,7 +180,7 @@ parts: []
 
   it("JSON 入力（*.kidori.json）でも動く", () => {
     const body = JSON.stringify({
-      meta: { project: "t", units: "mm", schemaVersion: "0.4" },
+      meta: { project: "t", units: "mm", schemaVersion: "0.5" },
       stocks: [
         { id: "b1", label: "棒", kind: "bar", length: 1820, width: 89, thickness: 19 },
       ],

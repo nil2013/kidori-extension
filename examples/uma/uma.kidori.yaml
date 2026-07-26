@@ -5,21 +5,28 @@
 #
 # ウマ（作業台）2脚（設計メモ）
 # ------------------------------------------------------------
-# assemblies / marks（SPECS.md §4c）の実例。SPECS.md §4c 掲載のウマそのもの。
+# assemblies / marks（SPECS.md §4c）に加え、vars・寸法ミニ式（SPECS.md §4d）の実例。
+# SPECS.md §4c 掲載のウマそのもの（vars を使う版）。
 # 「足」「天板」「接地面」という3つの形状だけを parts に書き、2脚のウマ
 # （足が内側に来る組み方と、互い違いに噛み合う組み方）は assemblies で表現する:
 #   - 部材必要数（leg=4, beam-top=2, beam-foot=2）は parts に書かない。
 #     各 assembly の contains（足2・天板1・接地面1）の合計から自動的に導出される。
-#   - 足当たり面（取り付けシロ）の位置は2脚で異なる（uma-1 は天板中央寄り、
-#     uma-2 は互い違いに噛み合わせるため位置をずらす）。同じ形状 beam-top でも
-#     assembly ごとにマーク位置が違うため、加工指示図は assembly ごとの変種面
+#   - 足当たり面（取り付けシロ）の位置は名前付き設計値 vars（inset・matingAllowance）
+#     から導出する。$inset は天板端からの基本の余白、$matingAllowance は互い違いに
+#     噛み合わせるための追加代（50 + 38 という数値ではなく、その導出意図を正本に残す）。
+#   - uma-1 は x: $inset のみ、uma-2 は x: "$inset + $matingAllowance" で位置をずらす。
+#     同じ形状 beam-top でもマーク位置が違うため、加工指示図は assembly ごとの変種面
 #     （parts/uma-1-beam-top.svg / parts/uma-2-beam-top.svg）として出力される。
 #   - marks は木取り図には描かれず、割付（歩留まり・必要本数）にも影響しない。
 #     加工指示図にのみハッチングと「取り付け位置（切削なし）」の注記で描かれる。
 #   - uma-2 は「ねじれ」の組み方（天板が接地面と直角方向に付く構成）で、足の木口
 #     断面を rot: 90 で面内回転させ、y: top で天板の上端に揃えて置く（SPECS.md
 #     §4c の更新後の例そのもの）。
-meta: { project: ウマ, units: mm, schemaVersion: "0.4" }
+meta: { project: ウマ, units: mm, schemaVersion: "0.5" }
+
+vars:
+  inset: 50            # 天板端から足当たり面までの基本の余白（mm）
+  matingAllowance: 38  # 互い違いに噛み合わせるために追加で確保する幅（mm）
 
 settings:
   kerf: 3            # 鋸刃厚（mm、仮値）
@@ -48,11 +55,13 @@ assemblies:
     marks:
       # ref: leg で足（2×4 材＝38×89）の断面寸法から領域を自動導出する。
       # 参照先（leg）の寸法を変えても、この領域は追従する。
-      - { on: beam-top, face: front, ref: leg, x: 50, note: 足当たり面 }
+      # x: $inset → 50mm（`kidori check --resolved` で確認できる）。
+      - { on: beam-top, face: front, ref: leg, x: $inset, note: 足当たり面 }
   - id: uma-2
     label: ウマ2号機（互い違いに噛み合う側）
     contains: { leg: 2, beam-top: 1, beam-foot: 1 }
     marks:
       # ねじれ方向: 足の木口断面を rot: 90 で面内回転（w/h が入れ替わる）し、
       # y: top で天板の上端に揃えて置く（面寸法−領域寸法の手計算が不要）。
-      - { on: beam-top, face: front, ref: leg, rot: 90, x: 120, y: top, note: 足当たり面 }
+      # x: "$inset + $matingAllowance" → 88mm。50 + 38 の導出意図をそのまま正本に残す。
+      - { on: beam-top, face: front, ref: leg, rot: 90, x: "$inset + $matingAllowance", y: top, note: 足当たり面 }
