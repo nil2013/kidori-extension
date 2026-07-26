@@ -30,6 +30,7 @@ import {
   ExprEnv,
   ResolutionTrace,
   collectVarRefs,
+  fieldExprCapability,
   parseExpr,
   resolveFieldExpr,
   resolveVars,
@@ -620,9 +621,26 @@ function asArray(v: unknown): Record<string, any>[] {
 }
 
 /**
+ * D4（Fable-tier Supervisor 裁定）: 式（文字列）で指定されたフィールドの
+ * (path → 解決値) 記録。
+ *
+ * `ResolutionTrace`（`trace`）は D2 の有限性ガードにより非有限値（Infinity 等）を
+ * 意図的に記録しない（`resolveRequiredNum` のコメント参照）ため、対象パスの収集に
+ * `trace` のキーを使うと Infinity のケースが漏れる。stage 8 の generic 制約再適用
+ * （{@link checkExprFieldConstraints}）はこの独立した記録を使う。
+ *
+ * NaN（他フィールドの解決失敗が揃えエイリアス経由で伝播した値。D2 コメント参照）は
+ * 記録しない: 根本原因は伝播元のフィールドで既に Issue 報告済みのため、ここに
+ * 記録して二重診断を生む理由がない。
+ */
+type ExprFieldValues = Record<string, number>;
+
+/**
  * 数値または式文字列（`raw`）を解決値へ変換する（必須フィールド用）。
  *
- * - `raw` が既に `number` ならそのまま返す（式ではないため trace に載せない。D2）。
+ * - `raw` が既に `number` ならそのまま返す（式ではないため trace に載せない。D2。
+ *   層1が既にリテラル値の制約を1回検査済みのため `exprFieldValues` にも載せない
+ *   ＝ stage 8 の generic 検査はリテラル値を二重診断しない）。
  * - `raw` が `string` なら {@link resolveFieldExpr} でパース＋評価し、成功時は
  *   `trace[path]` に原式・解決値を記録、失敗時は `issues` に {@link Issue} を追加し
  *   `NaN` を返す（呼び出し側の下流比較を silently false にするだけで、`issues` に
@@ -637,6 +655,7 @@ function resolveRequiredNum(
   env: ExprEnv,
   issues: Issue[],
   trace: ResolutionTrace,
+  exprFieldValues: ExprFieldValues,
   axis?: AxisEvalContext,
 ): number {
   if (typeof raw === "number") {
@@ -660,6 +679,12 @@ function resolveRequiredNum(
     if (Number.isFinite(result.value)) {
       trace[path] = result.trace;
     }
+    // D4: exprFieldValues は trace と異なり非有限値（Infinity）も記録する
+    // （stage 8 が Infinity を検出できるように）。ただし NaN は上記と同じ理由
+    // （伝播元での二重診断回避）で記録しない。
+    if (!Number.isNaN(result.value)) {
+      exprFieldValues[path] = result.value;
+    }
     return result.value;
   }
   return NaN;
@@ -672,12 +697,13 @@ function resolveOptionalNum(
   env: ExprEnv,
   issues: Issue[],
   trace: ResolutionTrace,
+  exprFieldValues: ExprFieldValues,
   axis?: AxisEvalContext,
 ): number | null {
   if (raw === null || raw === undefined) {
     return null;
   }
-  return resolveRequiredNum(path, raw, env, issues, trace, axis);
+  return resolveRequiredNum(path, raw, env, issues, trace, exprFieldValues, axis);
 }
 
 /** {@link resolveRequiredNum} の既定値版（`null`/`undefined` は `defaultValue`）。 */
@@ -687,13 +713,14 @@ function resolveNumWithDefault(
   env: ExprEnv,
   issues: Issue[],
   trace: ResolutionTrace,
+  exprFieldValues: ExprFieldValues,
   defaultValue: number,
   axis?: AxisEvalContext,
 ): number {
   if (raw === null || raw === undefined) {
     return defaultValue;
   }
-  return resolveRequiredNum(path, raw, env, issues, trace, axis);
+  return resolveRequiredNum(path, raw, env, issues, trace, exprFieldValues, axis);
 }
 
 /**
@@ -760,15 +787,25 @@ function resolveSettings(
   env: ExprEnv,
   issues: Issue[],
   trace: ResolutionTrace,
+  exprFieldValues: ExprFieldValues,
 ): Settings {
   return {
-    kerf: resolveNumWithDefault("settings.kerf", rawSettings.kerf, env, issues, trace, 3.0),
+    kerf: resolveNumWithDefault(
+      "settings.kerf",
+      rawSettings.kerf,
+      env,
+      issues,
+      trace,
+      exprFieldValues,
+      3.0,
+    ),
     edgeTrim: resolveNumWithDefault(
       "settings.edgeTrim",
       rawSettings.edgeTrim,
       env,
       issues,
       trace,
+      exprFieldValues,
       5.0,
     ),
     candidates: "candidates" in rawSettings ? Math.trunc(rawSettings.candidates) : 3,
@@ -796,14 +833,22 @@ function resolveStock(
   env: ExprEnv,
   issues: Issue[],
   trace: ResolutionTrace,
+  exprFieldValues: ExprFieldValues,
 ): Stock {
   const stock: Stock = {
     id: s.id,
     label: s.label,
     kind: s.kind,
-    length: resolveRequiredNum(`${path}.length`, s.length, env, issues, trace),
-    width: resolveRequiredNum(`${path}.width`, s.width, env, issues, trace),
-    thickness: resolveRequiredNum(`${path}.thickness`, s.thickness, env, issues, trace),
+    length: resolveRequiredNum(`${path}.length`, s.length, env, issues, trace, exprFieldValues),
+    width: resolveRequiredNum(`${path}.width`, s.width, env, issues, trace, exprFieldValues),
+    thickness: resolveRequiredNum(
+      `${path}.thickness`,
+      s.thickness,
+      env,
+      issues,
+      trace,
+      exprFieldValues,
+    ),
     price: s.price !== null && s.price !== undefined ? Number(s.price) : null,
   };
   if (typeof s.preset === "string") {
@@ -819,18 +864,33 @@ function resolveFeature(
   env: ExprEnv,
   issues: Issue[],
   trace: ResolutionTrace,
+  exprFieldValues: ExprFieldValues,
 ): Feature {
   if (rawFeature.type === "groove") {
     const groove: Groove = {
       type: "groove",
       face: rawFeature.face,
       dir: rawFeature.dir,
-      pos: resolveRequiredNum(`${path}.pos`, rawFeature.pos, env, issues, trace),
-      width: resolveRequiredNum(`${path}.width`, rawFeature.width, env, issues, trace),
-      depth: resolveRequiredNum(`${path}.depth`, rawFeature.depth, env, issues, trace),
+      pos: resolveRequiredNum(`${path}.pos`, rawFeature.pos, env, issues, trace, exprFieldValues),
+      width: resolveRequiredNum(
+        `${path}.width`,
+        rawFeature.width,
+        env,
+        issues,
+        trace,
+        exprFieldValues,
+      ),
+      depth: resolveRequiredNum(
+        `${path}.depth`,
+        rawFeature.depth,
+        env,
+        issues,
+        trace,
+        exprFieldValues,
+      ),
       end: rawFeature.end,
-      from: resolveOptionalNum(`${path}.from`, rawFeature.from, env, issues, trace),
-      to: resolveOptionalNum(`${path}.to`, rawFeature.to, env, issues, trace),
+      from: resolveOptionalNum(`${path}.from`, rawFeature.from, env, issues, trace, exprFieldValues),
+      to: resolveOptionalNum(`${path}.to`, rawFeature.to, env, issues, trace, exprFieldValues),
     };
     return groove;
   }
@@ -838,10 +898,10 @@ function resolveFeature(
   const hole: Hole = {
     type: "hole",
     face: rawFeature.face,
-    x: resolveRequiredNum(`${path}.x`, rawFeature.x, env, issues, trace),
-    y: resolveRequiredNum(`${path}.y`, rawFeature.y, env, issues, trace),
-    dia: resolveRequiredNum(`${path}.dia`, rawFeature.dia, env, issues, trace),
-    depth: resolveOptionalNum(`${path}.depth`, rawFeature.depth, env, issues, trace),
+    x: resolveRequiredNum(`${path}.x`, rawFeature.x, env, issues, trace, exprFieldValues),
+    y: resolveRequiredNum(`${path}.y`, rawFeature.y, env, issues, trace, exprFieldValues),
+    dia: resolveRequiredNum(`${path}.dia`, rawFeature.dia, env, issues, trace, exprFieldValues),
+    depth: resolveOptionalNum(`${path}.depth`, rawFeature.depth, env, issues, trace, exprFieldValues),
   };
   return hole;
 }
@@ -857,6 +917,7 @@ function resolvePart(
   env: ExprEnv,
   issues: Issue[],
   trace: ResolutionTrace,
+  exprFieldValues: ExprFieldValues,
 ): Part {
   const derived = containedQty(assemblies, p.id);
   const declared = p.qty !== null && p.qty !== undefined ? Math.trunc(Number(p.qty)) : null;
@@ -865,11 +926,11 @@ function resolvePart(
     label: p.label,
     qty: derived ?? declared ?? 0,
     stock: p.stock,
-    length: resolveRequiredNum(`${path}.length`, p.length, env, issues, trace),
-    width: resolveOptionalNum(`${path}.width`, p.width, env, issues, trace),
+    length: resolveRequiredNum(`${path}.length`, p.length, env, issues, trace, exprFieldValues),
+    width: resolveOptionalNum(`${path}.width`, p.width, env, issues, trace, exprFieldValues),
     rot: p.rot !== undefined ? Boolean(p.rot) : true,
     features: asArray(p.features).map((f, j) =>
-      resolveFeature(f, `${path}.features[${j}]`, env, issues, trace),
+      resolveFeature(f, `${path}.features[${j}]`, env, issues, trace, exprFieldValues),
     ),
   };
 }
@@ -888,14 +949,15 @@ function resolveMarkEntry(
   env: ExprEnv,
   issues: Issue[],
   trace: ResolutionTrace,
+  exprFieldValues: ExprFieldValues,
 ): Mark {
   return {
     on: m.on,
     face: m.face,
     x: 0, // 仮置き（resolveMarkPositions が上書きする）
     y: 0, // 仮置き（resolveMarkPositions が上書きする）
-    w: resolveOptionalNum(`${path}.w`, m.w, env, issues, trace),
-    h: resolveOptionalNum(`${path}.h`, m.h, env, issues, trace),
+    w: resolveOptionalNum(`${path}.w`, m.w, env, issues, trace, exprFieldValues),
+    h: resolveOptionalNum(`${path}.h`, m.h, env, issues, trace, exprFieldValues),
     ref: typeof m.ref === "string" ? m.ref : null,
     rot: m.rot === 90 ? 90 : 0,
     note: typeof m.note === "string" ? m.note : null,
@@ -909,6 +971,7 @@ function resolveAssembly(
   env: ExprEnv,
   issues: Issue[],
   trace: ResolutionTrace,
+  exprFieldValues: ExprFieldValues,
 ): Assembly {
   const contains: Record<string, number> = {};
   if (isPlainObject(a.contains)) {
@@ -921,7 +984,7 @@ function resolveAssembly(
     label: typeof a.label === "string" ? a.label : null,
     contains,
     marks: asArray(a.marks).map((m, j) =>
-      resolveMarkEntry(m, `${path}.marks[${j}]`, env, issues, trace),
+      resolveMarkEntry(m, `${path}.marks[${j}]`, env, issues, trace, exprFieldValues),
     ),
   };
 }
@@ -941,6 +1004,7 @@ function buildResolvedProject(
   env: ExprEnv,
   issues: Issue[],
   trace: ResolutionTrace,
+  exprFieldValues: ExprFieldValues,
 ): Project {
   const rawMeta = raw.meta as Record<string, any>;
   const meta: Meta = {
@@ -950,18 +1014,18 @@ function buildResolvedProject(
   };
 
   const rawSettings: Record<string, any> = isPlainObject(raw.settings) ? raw.settings : {};
-  const settings = resolveSettings(rawSettings, env, issues, trace);
+  const settings = resolveSettings(rawSettings, env, issues, trace, exprFieldValues);
 
   const stocks: Stock[] = asArray(raw.stocks).map((s, i) =>
-    resolveStock(s, `stocks[${i}]`, env, issues, trace),
+    resolveStock(s, `stocks[${i}]`, env, issues, trace, exprFieldValues),
   );
 
   const assemblies: Assembly[] = asArray(raw.assemblies).map((a, i) =>
-    resolveAssembly(a, `assemblies[${i}]`, env, issues, trace),
+    resolveAssembly(a, `assemblies[${i}]`, env, issues, trace, exprFieldValues),
   );
 
   const parts: Part[] = asArray(raw.parts).map((p, i) =>
-    resolvePart(p, `parts[${i}]`, assemblies, env, issues, trace),
+    resolvePart(p, `parts[${i}]`, assemblies, env, issues, trace, exprFieldValues),
   );
 
   return { meta, settings, stocks, parts, assemblies };
@@ -987,6 +1051,7 @@ function resolveMarkPositions(
   env: ExprEnv,
   issues: Issue[],
   trace: ResolutionTrace,
+  exprFieldValues: ExprFieldValues,
 ): void {
   const rawAssemblies = asArray(raw.assemblies);
   project.assemblies.forEach((assembly, i) => {
@@ -1003,12 +1068,12 @@ function resolveMarkPositions(
         // 参照フェーズで既に error 報告済みのはず（到達しないはずの防御）。
         return;
       }
-      mark.x = resolveNumWithDefault(`${path}.x`, rawMark.x, env, issues, trace, 0, {
+      mark.x = resolveNumWithDefault(`${path}.x`, rawMark.x, env, issues, trace, exprFieldValues, 0, {
         axis: "x",
         axisSpan: spans.xSpan,
         size: size.w,
       });
-      mark.y = resolveNumWithDefault(`${path}.y`, rawMark.y, env, issues, trace, 0, {
+      mark.y = resolveNumWithDefault(`${path}.y`, rawMark.y, env, issues, trace, exprFieldValues, 0, {
         axis: "y",
         axisSpan: spans.ySpan,
         size: size.h,
@@ -1711,6 +1776,60 @@ function checkMarksGeometry(project: Project): Issue[] {
 }
 
 /**
+ * D0/D4（Fable-tier Supervisor 裁定）: 式で指定された値のうち、層1が数値ブランチで
+ * 持つ制約（`minimum`/`exclusiveMinimum`）を、解決後の最終値へ再適用する
+ * （幾何フェーズ・step 8）。
+ *
+ * 「負値検査」ではなく「制約の再適用＋有限性」である（D0）。負のリテラルは層1が
+ * 既に1回検査済みだが、`$var`（vars 経由）や複数式の加減算で最終的に負値・0・
+ * Infinity へ解決される場合、層1はリテラル `-95` 等の文字列表現しか見ないため
+ * 素通りする（`exclusiveMinimum: 0` の型は string ブランチには掛からないため）。
+ *
+ * - 検査対象は {@link exprFieldValues}（式＝文字列で指定されたフィールドのみ。
+ *   `resolveRequiredNum` が記録する。リテラル入力はここに現れないため層1との
+ *   二重診断にならない）。
+ * - `owner: "delegated"`（groove.pos/from/to・hole.x/y・marks[].x/y/w/h）は
+ *   ここでは検査しない。対応する `checkGroove`/`checkHole`/`checkMarksGeometry`
+ *   が最終値に対して実質的に検査済みであり（D2）、ここでも検査すると二重診断に
+ *   なる。
+ * - `!Number.isFinite(value)`（Infinity 等）は制約の有無によらず常に error
+ *   （D5）。
+ */
+function checkExprFieldConstraints(exprFieldValues: Readonly<ExprFieldValues>): Issue[] {
+  const issues: Issue[] = [];
+  for (const [path, value] of Object.entries(exprFieldValues)) {
+    const constraint = fieldExprCapability(path)?.constraint;
+    if (constraint === undefined || constraint.owner !== "generic") {
+      continue;
+    }
+    if (!Number.isFinite(value)) {
+      issues.push({
+        path,
+        message: `式の解決値 ${value} は有限の数値でなければなりません。`,
+        severity: "error",
+      });
+      continue;
+    }
+    if (constraint.exclusive) {
+      if (value <= constraint.min + EPS) {
+        issues.push({
+          path,
+          message: `式の解決値 ${value} は ${constraint.min} より大きい必要があります。`,
+          severity: "error",
+        });
+      }
+    } else if (value < constraint.min - EPS) {
+      issues.push({
+        path,
+        message: `式の解決値 ${value} は最小値 ${constraint.min} を下回っています。`,
+        severity: "error",
+      });
+    }
+  }
+  return issues;
+}
+
+/**
  * v0.7: parts[].qty の導出（SPECS.md §4c）。
  *
  * 1. いずれかの構成の contains に現れる形状 → **全構成の合計が勝つ**。
@@ -1902,9 +2021,16 @@ export function loadStocksFile(baseDir: string, ref: string): StocksFileResult {
   // （正本側の trace とパス名前空間が重複しうるため。詳細は報告参照）。
   const resolutionIssues: Issue[] = [];
   const stockTrace: ResolutionTrace = {};
+  // D0/D4: stocksFile 参照先の length/width/thickness も式を書けるため（上記コメント
+  // 参照）、正本側の主パイプラインと対称に generic 制約再適用（stage 8 相当）を
+  // ここでも行う。stocksFile 側は「近い方が勝つ」マージ後、正本の trace/exprFieldValues
+  // に混ぜない設計（同じ理由でパス名前空間が重複しうる）のため、この関数のスコープ内で
+  // 検査を完結させ、結果を resolutionIssues に合流させる。
+  const stockExprFieldValues: ExprFieldValues = {};
   const stocks = ((data.stocks ?? []) as Record<string, any>[]).map((s, i) =>
-    resolveStock(s, `stocks[${i}]`, {}, resolutionIssues, stockTrace),
+    resolveStock(s, `stocks[${i}]`, {}, resolutionIssues, stockTrace, stockExprFieldValues),
   );
+  resolutionIssues.push(...checkExprFieldConstraints(stockExprFieldValues));
   const wrappedResolutionIssues = resolutionIssues.map(
     (i): Issue =>
       stocksFileIssue(`stocksFile の参照先 '${ref}' の ${i.path}: ${i.message}`, i.severity),
@@ -2096,6 +2222,10 @@ export function loadProjectFromRaw(
   // ---- 式解決（D1。参照フェーズ通過後。SPECS.md §4d step 3〜7）------------
   const exprIssues: Issue[] = [];
   const trace: ResolutionTrace = {};
+  // D4: trace とは独立に、式（文字列）で指定されたフィールドの (path → 解決値) を
+  // 記録する（ExprFieldValues のコメント参照。有限性ガードで trace から漏れる
+  // Infinity のケースを stage 8 で検出するために必要）。
+  const exprFieldValues: ExprFieldValues = {};
 
   const rawVars: Record<string, number | string> = isPlainObject(normalized.vars)
     ? (normalized.vars as Record<string, number | string>)
@@ -2108,10 +2238,10 @@ export function loadProjectFromRaw(
   Object.assign(trace, varsResolution.trace);
   const env: ExprEnv = varsResolution.values;
 
-  const resolvedProject = buildResolvedProject(normalized, env, exprIssues, trace);
+  const resolvedProject = buildResolvedProject(normalized, env, exprIssues, trace, exprFieldValues);
   const mergeIssues = mergeExternalStocks(resolvedProject, external);
   // step 5〜7: marks.x/y は stocks/parts（marks.w/h 含む）確定後にのみ解決できる。
-  resolveMarkPositions(resolvedProject, normalized, env, exprIssues, trace);
+  resolveMarkPositions(resolvedProject, normalized, env, exprIssues, trace, exprFieldValues);
 
   // ---- 幾何フェーズ（D1。解決後の値でしか判定できない境界検査。step 8）------
   const stocksById = new Map(resolvedProject.stocks.map((s) => [s.id, s]));
@@ -2120,6 +2250,9 @@ export function loadProjectFromRaw(
     ...checkWidthConsistency(resolvedProject, stocksById),
     ...checkFeatureBounds(resolvedProject, stocksById),
     ...checkMarksGeometry(resolvedProject),
+    // D0/D4: 式で指定された値のみ対象。層1が数値ブランチで持つ制約（generic
+    // 所有分。委譲済みは対象外）を、解決後の最終値へ再適用する。
+    ...checkExprFieldConstraints(exprFieldValues),
   ];
   // 値非依存の検査（固定パイプラインの言及外。D1「都合のよい側に置いてよい」の5項目）。
   const otherIssues: Issue[] = [

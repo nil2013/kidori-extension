@@ -1229,3 +1229,338 @@ describe("U-PIPE D4: marks の幾何境界検査は最終解決値のみを判�
     ).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// D0/D4（Fable-tier Supervisor 裁定）: 式解決後の値への制約再適用（stage 8:
+// checkExprFieldConstraints）。
+//
+// 背景（D0。最重要）: これは「負値検査」ではなく「制約の再適用＋有限性」である。
+// 層1（schema.ts の数値ブランチ）は `minimum`/`exclusiveMinimum` を持つが、
+// リテラルの型（number）にしか掛からない。式（string）で同じフィールドに
+// 負値・ゼロ・Infinity を書くと、層1は「文字列である」ことしか見ないため素通り
+// する。stage 8 はこの素通りを、式で指定されたフィールドに限って塞ぐ。
+//
+// テスト構成:
+// - 「素通りしていた11フィールド」: EXPR_FIELD_CAPABILITIES の owner: "generic"
+//   （既存 check* のいずれにも最終値の下限検査が無い）フィールド。式経由の負値が
+//   本 PR で新設した checkExprFieldConstraints により error になることを確認する。
+// - 「カナリア9本」: owner: "delegated"（groove.pos/from/to・hole.x/y・
+//   marks[].x/y/w/h）フィールド。式経由の負値が **委譲先の既存 check 関数**
+//   （checkGroove/checkHole/checkMarksGeometry）で error になることを確認し、
+//   かつ checkExprFieldConstraints 側の generic メッセージが重複して出ないこと
+//   も確認する（委譲が実効であることの証拠。二重診断が起きていないことの証拠）。
+//
+// 注意（ブリーフの前提との差分。報告で詳述）: ブリーフは D2 を「7件」としていたが、
+// EXPR_FIELD_CAPABILITIES と各 check* 関数を実際に突き合わせた結果、委譲済み
+// フィールドは marks[].w/h を含めて9件だった（brief の列挙自体は pos/from/to/
+// hole.x/y/marks.x/y/w/h の9個を書いており、ヘッダーの「7件」という数字だけが
+// 実体と一致していない）。テストは実体（9件）に合わせて9本用意する。
+// ---------------------------------------------------------------------------
+describe("D0/D4: 式解決後の値への制約再適用（stage 8: checkExprFieldConstraints）", () => {
+  /** stage 8 の generic 検査が出すメッセージの目印（EPS 込みの境界値。D5）。 */
+  const EXCLUSIVE_MARKER = "より大きい必要があります";
+  const MINIMUM_MARKER = "を下回っています";
+  const FINITE_MARKER = "有限の数値でなければなりません";
+
+  function expectGenericError(
+    issues: { path: string; message: string; severity: string }[],
+    path: string,
+    marker: string,
+  ): void {
+    expect(
+      issues.some((i) => i.severity === "error" && i.path === path && i.message.includes(marker)),
+      `path=${path} marker="${marker}" issues=${JSON.stringify(issues)}`,
+    ).toBe(true);
+  }
+
+  // -------------------------------------------------------------------------
+  // 素通りしていた11フィールド（D1）: 式経由の負値は stage 8 の generic 検査で
+  // error になる。
+  // -------------------------------------------------------------------------
+  describe("素通りしていた11フィールド: 式経由の負値は error になる（D1）", () => {
+    it("settings.kerf（minimum: 0）", () => {
+      const data = minimalProject();
+      data.settings.kerf = "0 - 5";
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expectGenericError(issues, "settings.kerf", MINIMUM_MARKER);
+    });
+
+    it("settings.edgeTrim（minimum: 0）", () => {
+      const data = minimalProject();
+      data.settings.edgeTrim = "0 - 5";
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expectGenericError(issues, "settings.edgeTrim", MINIMUM_MARKER);
+    });
+
+    it("stocks[].length（exclusiveMinimum: 0）", () => {
+      const data = minimalProject();
+      data.stocks[0].length = "5 - 100";
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expectGenericError(issues, "stocks[0].length", EXCLUSIVE_MARKER);
+    });
+
+    it("stocks[].width（exclusiveMinimum: 0）", () => {
+      const data = minimalProject();
+      data.stocks[0].width = "5 - 100";
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expectGenericError(issues, "stocks[0].width", EXCLUSIVE_MARKER);
+    });
+
+    it("stocks[].thickness（exclusiveMinimum: 0）", () => {
+      const data = minimalProject();
+      data.stocks[0].thickness = "5 - 100";
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expectGenericError(issues, "stocks[0].thickness", EXCLUSIVE_MARKER);
+    });
+
+    it("parts[].length（exclusiveMinimum: 0。ブリーフの最小再現例そのもの）", () => {
+      const data = minimalProject();
+      data.parts[0].length = "5 - 100";
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expectGenericError(issues, "parts[0].length", EXCLUSIVE_MARKER);
+    });
+
+    it("parts[].width（exclusiveMinimum: 0）", () => {
+      const data = minimalProject();
+      data.parts[1].width = "5 - 100";
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expectGenericError(issues, "parts[1].width", EXCLUSIVE_MARKER);
+    });
+
+    it("groove.width（exclusiveMinimum: 0）", () => {
+      const data = minimalProject();
+      data.parts[1].features[0].width = "5 - 100";
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expectGenericError(issues, "parts[1].features[0].width", EXCLUSIVE_MARKER);
+    });
+
+    it("groove.depth（exclusiveMinimum: 0。既存検査は厚み超過/同値のみで下限は無かった）", () => {
+      const data = minimalProject();
+      data.parts[1].features[0].depth = "5 - 100";
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expectGenericError(issues, "parts[1].features[0].depth", EXCLUSIVE_MARKER);
+    });
+
+    it("hole.dia（exclusiveMinimum: 0。負の dia は区間反転で既存境界検査をすり抜ける）", () => {
+      const data = minimalProject();
+      data.parts[1].features[1].dia = "5 - 100";
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expectGenericError(issues, "parts[1].features[1].dia", EXCLUSIVE_MARKER);
+    });
+
+    it("hole.depth（exclusiveMinimum: 0。既存検査は厚み超過/同値のみで下限は無かった）", () => {
+      const data = minimalProject();
+      data.parts[1].features[1].depth = "5 - 100";
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expectGenericError(issues, "parts[1].features[1].depth", EXCLUSIVE_MARKER);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // カナリア9本（D2。実体はブリーフの「7件」ではなく9件。報告参照）: 既に委譲
+  // 済みのフィールドは、式経由の負値も **委譲先の既存 check 関数**が検出する
+  // （generic 側は owner: "delegated" のため何もしない＝二重診断が起きない）。
+  // -------------------------------------------------------------------------
+  describe("カナリア9本: 委譲済みフィールドは委譲先が検出し、generic 側は反応しない（D2）", () => {
+    it("groove.pos: 占有範囲検査（checkGroove）が検出する", () => {
+      const data = minimalProject();
+      data.parts[1].features[0].pos = "0 - 50"; // width は既定の 7 のまま
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expect(
+        issues.some(
+          (i) =>
+            i.severity === "error" &&
+            i.path === "parts[1].features[0].pos" &&
+            i.message.includes("部材範囲"),
+        ),
+      ).toBe(true);
+      // generic 側の文言が重複していないこと。
+      expect(issues.some((i) => i.message.includes(EXCLUSIVE_MARKER))).toBe(false);
+    });
+
+    it("groove.from: 止め溝の範囲検査（checkGroove）が検出する", () => {
+      const data = minimalProject();
+      data.parts[1].features[0].end = "stopped";
+      data.parts[1].features[0].from = "0 - 10";
+      data.parts[1].features[0].to = 50;
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expect(issues.some((i) => i.message.includes("止め溝の範囲"))).toBe(true);
+      expect(issues.some((i) => i.message.includes(MINIMUM_MARKER))).toBe(false);
+    });
+
+    it("groove.to: 止め溝の範囲検査（checkGroove）が検出する（実装上 path は .from に載る既存の挙動）", () => {
+      const data = minimalProject();
+      data.parts[1].features[0].end = "stopped";
+      data.parts[1].features[0].from = 0;
+      data.parts[1].features[0].to = "0 - 5";
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expect(issues.some((i) => i.message.includes("止め溝の範囲"))).toBe(true);
+      expect(issues.some((i) => i.message.includes(MINIMUM_MARKER))).toBe(false);
+    });
+
+    it("hole.x: 部材範囲検査（checkHole）が検出する", () => {
+      const data = minimalProject();
+      data.parts[1].features[1].x = "0 - 50"; // dia は既定の 4 のまま
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expect(
+        issues.some(
+          (i) =>
+            i.severity === "error" &&
+            i.path === "parts[1].features[1].x" &&
+            i.message.includes("穴の位置"),
+        ),
+      ).toBe(true);
+      expect(issues.some((i) => i.message.includes(MINIMUM_MARKER))).toBe(false);
+    });
+
+    it("hole.y: 部材範囲検査（checkHole）が検出する", () => {
+      const data = minimalProject();
+      data.parts[1].features[1].y = "0 - 50";
+      const { project, issues } = loadProjectFromRaw(data);
+      expect(project).toBeNull();
+      expect(
+        issues.some(
+          (i) =>
+            i.severity === "error" &&
+            i.path === "parts[1].features[1].y" &&
+            i.message.includes("穴の位置"),
+        ),
+      ).toBe(true);
+      expect(issues.some((i) => i.message.includes(MINIMUM_MARKER))).toBe(false);
+    });
+
+    /** marks[].x/y/w/h の検査には assemblies が要る最小プロジェクト。 */
+    function projectWithMark(overrides: Record<string, unknown>): any {
+      const data = minimalProject();
+      data.assemblies = [
+        {
+          id: "asm",
+          contains: { "shelf-0": 1 },
+          marks: [{ on: "shelf-0", face: "front", w: 10, h: 10, x: 0, y: 0, ...overrides }],
+        },
+      ];
+      return data;
+    }
+
+    it("marks.x: 幾何境界検査（checkMarksGeometry）が検出する", () => {
+      const { project, issues } = loadProjectFromRaw(projectWithMark({ x: "0 - 50" }));
+      expect(project).toBeNull();
+      expect(
+        issues.some(
+          (i) =>
+            i.severity === "error" &&
+            i.path === "assemblies[0].marks[0].x" &&
+            i.message.includes("0以上でなければなりません"),
+        ),
+      ).toBe(true);
+      expect(issues.some((i) => i.message.includes(MINIMUM_MARKER))).toBe(false);
+    });
+
+    it("marks.y: 幾何境界検査（checkMarksGeometry）が検出する", () => {
+      const { project, issues } = loadProjectFromRaw(projectWithMark({ y: "0 - 50" }));
+      expect(project).toBeNull();
+      expect(
+        issues.some(
+          (i) =>
+            i.severity === "error" &&
+            i.path === "assemblies[0].marks[0].y" &&
+            i.message.includes("0以上でなければなりません"),
+        ),
+      ).toBe(true);
+      expect(issues.some((i) => i.message.includes(MINIMUM_MARKER))).toBe(false);
+    });
+
+    it("marks.w: 幾何境界検査（checkMarksGeometry）が検出する", () => {
+      const { project, issues } = loadProjectFromRaw(projectWithMark({ w: "0 - 10" }));
+      expect(project).toBeNull();
+      expect(
+        issues.some(
+          (i) =>
+            i.severity === "error" &&
+            i.path === "assemblies[0].marks[0].w" &&
+            i.message.includes("正でなければなりません"),
+        ),
+      ).toBe(true);
+      expect(issues.some((i) => i.message.includes(EXCLUSIVE_MARKER))).toBe(false);
+    });
+
+    it("marks.h: 幾何境界検査（checkMarksGeometry）が検出する", () => {
+      const { project, issues } = loadProjectFromRaw(projectWithMark({ h: "0 - 10" }));
+      expect(project).toBeNull();
+      expect(
+        issues.some(
+          (i) =>
+            i.severity === "error" &&
+            i.path === "assemblies[0].marks[0].h" &&
+            i.message.includes("正でなければなりません"),
+        ),
+      ).toBe(true);
+      expect(issues.some((i) => i.message.includes(EXCLUSIVE_MARKER))).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 式経由のゼロ（D0 第2の穴）: exclusiveMinimum フィールドに $var（値0）を書くと
+  // 従来は素通りしていた（リテラル 0 は層1が弾くが、式なら層1は文字列としてしか
+  // 見ない）。
+  // -------------------------------------------------------------------------
+  it("式経由のゼロ: $a（vars: { a: 0 }）を exclusiveMinimum フィールドに書くと error になる", () => {
+    const data = minimalProject();
+    data.vars = { a: 0 };
+    data.stocks[0].length = "$a";
+    const { project, issues } = loadProjectFromRaw(data);
+    expect(project).toBeNull();
+    expectGenericError(issues, "stocks[0].length", EXCLUSIVE_MARKER);
+  });
+
+  // -------------------------------------------------------------------------
+  // リテラル負値は層1で1回だけ報告される（二重診断が起きていないことの確認）。
+  // 層1（schema.ts）でエラーになった場合、loadProjectFromRaw は式解決フェーズ
+  // （exprFieldValues の記録・checkExprFieldConstraints の実行）に到達する前に
+  // 早期リターンするため、構造的に stage 8 の generic 検査は実行されない。
+  // -------------------------------------------------------------------------
+  it("リテラル負値（stocks[].length = -100）は層1で1回だけ報告される", () => {
+    const data = minimalProject();
+    data.stocks[0].length = -100;
+    const { project, issues } = loadProjectFromRaw(data);
+    expect(project).toBeNull();
+    const forThisPath = issues.filter((i) => i.path === "stocks[0].length");
+    expect(forThisPath, JSON.stringify(issues)).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Infinity（D0 第3の穴）: 巨大リテラルの和で到達可能。trace は D2 の有限性
+  // ガードにより Infinity を記録しないため、対象パス収集は exprFieldValues
+  // （D4）を使う必要がある。
+  // -------------------------------------------------------------------------
+  it("Infinity: 巨大リテラルの和が Infinity に到達すると error になる", () => {
+    // Number.MAX_VALUE ≈ 1.7976931348623157e+308。1e308 単体は有限だが、
+    // 1e308 + 1e308 = 2e308 は MAX_VALUE を超え、IEEE754 double では
+    // Infinity に丸められる（実機確認）。指数表記 "1e308" は expr.ts の
+    // lexNumber が明示的に拒否するため、10進展開した文字列で書く。
+    const big = "1" + "0".repeat(308);
+    expect(Number.isFinite(Number(big))).toBe(true); // 単体は有限（前提の確認）。
+    expect(Number(big) + Number(big)).toBe(Infinity); // 和は Infinity（前提の確認）。
+
+    const data = minimalProject();
+    data.stocks[0].length = `${big} + ${big}`;
+    const { project, issues } = loadProjectFromRaw(data);
+    expect(project).toBeNull();
+    expectGenericError(issues, "stocks[0].length", FINITE_MARKER);
+  });
+});

@@ -62,6 +62,25 @@ export interface ExprDiagnostic {
 // AST（D4: 字句・文法）
 // ---------------------------------------------------------------------------
 
+/**
+ * D0/D3（Fable-tier Supervisor 裁定）: 式解決後の最終値へ層1の数値ブランチ制約を
+ * 再適用する（U-PIPE 幾何フェーズ・stage 8）ための、値域＋検査所有者。
+ *
+ * - `min`/`exclusive`: 層1（schema.ts）の数値ブランチが持つ `minimum`/
+ *   `exclusiveMinimum` と同じ意味（`exclusive: true` なら `v > min` を要求、
+ *   `false` なら `v >= min` を要求）。
+ * - `owner`: `"delegated"` は既存の意味検証（`checkGroove`/`checkHole`/
+ *   `checkMarksGeometry`）が最終値に対して当該制約を実質的に検査済みという
+ *   意味（境界検査が pos±width/2 等の形で包含するため。詳細は報告参照）。
+ *   `"generic"` はそのような委譲先が無く、stage 8 の汎用再検査
+ *   （`src/core/loader.ts` の `checkExprFieldConstraints`）が権威になる。
+ */
+export interface ExprValueConstraint {
+  readonly min: number;
+  readonly exclusive: boolean;
+  readonly owner: "generic" | "delegated";
+}
+
 /** X 軸の揃えエイリアス（SPECS.md §4d:254）。 */
 export type XAlignAlias = "left" | "center" | "right";
 /** Y 軸の揃えエイリアス（SPECS.md §4d:255）。 */
@@ -288,10 +307,16 @@ export function parseExpr(raw: string): ParseExprResult {
 /** 位置式の軸（marks の x/y のみ。SPECS.md §4d:242,245）。 */
 export type ExprAxis = "x" | "y";
 
-/** 1フィールドの式受け入れ能力。 */
+/**
+ * 1フィールドの式受け入れ能力。
+ *
+ * `constraint` は D3 裁定により追加した値域＋検査所有者（{@link ExprValueConstraint}）。
+ * 値域を持たないフィールド（`vars.*` 自体。vars を参照する側のフィールドで
+ * 検査される）は `constraint` を省略する。
+ */
 export type ExprFieldCapability =
-  | { readonly kind: "context-free" }
-  | { readonly kind: "positional"; readonly axis: ExprAxis };
+  | { readonly kind: "context-free"; readonly constraint?: ExprValueConstraint }
+  | { readonly kind: "positional"; readonly axis: ExprAxis; readonly constraint?: ExprValueConstraint };
 
 /**
  * フィールド path パターン → 式可否＋エイリアス軸の単一テーブル（D3）。
@@ -322,29 +347,116 @@ export type ExprFieldCapability =
  * このテーブルには**含めない**（244・245 の完全列挙のみを転写する。246 は例示であり
  * 完全列挙ではないため、テーブルに含めると「244/245 と完全一致すること」を検証する
  * テストの意図がぼやける）。
+ *
+ * `constraint`（D3・D0）: 層1（schema.ts）の数値ブランチ制約の単一ソース。
+ * `owner: "delegated"` の根拠（`src/core/loader.ts` の該当 check 関数と突き合わせて
+ * 実機検証済み。詳細は報告参照）:
+ * - `pos`/`from`/`to`/`x`(hole)/`y`(hole): `checkGroove`/`checkHole` の占有範囲
+ *   （`pos±width/2` 等）検査が、half（width/2 や dia/2）が非負である前提の下で
+ *   当該フィールド単体の負値も構造的に検出する（half が非負である前提は
+ *   width/dia 自身の `owner: "generic"` 制約が別途保証する）。
+ * - `assemblies[].marks[].x/y/w/h`: `checkMarksGeometry` が最終値に対して
+ *   `w>0`/`h>0`/`x>=0`/`y>=0` を直接検査する（SPECS.md §4c:228 の逐語実装）。
+ * それ以外（kerf/edgeTrim/stocks 寸法/parts 寸法/groove.width/groove.depth/
+ * hole.dia）は既存 check* のいずれにも最終値の下限検査が無いため `owner: "generic"`
+ * （stage 8 の `checkExprFieldConstraints` が権威）。
  */
 export const EXPR_FIELD_CAPABILITIES: Readonly<Record<string, ExprFieldCapability>> = {
   "vars.*": { kind: "context-free" },
-  "settings.kerf": { kind: "context-free" },
-  "settings.edgeTrim": { kind: "context-free" },
-  "stocks[].length": { kind: "context-free" },
-  "stocks[].width": { kind: "context-free" },
-  "stocks[].thickness": { kind: "context-free" },
-  "parts[].length": { kind: "context-free" },
-  "parts[].width": { kind: "context-free" },
-  "parts[].features[].pos": { kind: "context-free" }, // groove.pos
-  "parts[].features[].width": { kind: "context-free" }, // groove.width
-  "parts[].features[].depth": { kind: "context-free" }, // groove.depth / hole.depth
-  "parts[].features[].from": { kind: "context-free" }, // groove.from
-  "parts[].features[].to": { kind: "context-free" }, // groove.to
-  "parts[].features[].x": { kind: "context-free" }, // hole.x（エイリアス不可）
-  "parts[].features[].y": { kind: "context-free" }, // hole.y（エイリアス不可）
-  "parts[].features[].dia": { kind: "context-free" }, // hole.dia
-  "assemblies[].marks[].x": { kind: "positional", axis: "x" },
-  "assemblies[].marks[].y": { kind: "positional", axis: "y" },
-  "assemblies[].marks[].w": { kind: "context-free" },
-  "assemblies[].marks[].h": { kind: "context-free" },
+  "settings.kerf": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: false, owner: "generic" },
+  },
+  "settings.edgeTrim": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: false, owner: "generic" },
+  },
+  "stocks[].length": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: true, owner: "generic" },
+  },
+  "stocks[].width": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: true, owner: "generic" },
+  },
+  "stocks[].thickness": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: true, owner: "generic" },
+  },
+  "parts[].length": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: true, owner: "generic" },
+  },
+  "parts[].width": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: true, owner: "generic" },
+  },
+  "parts[].features[].pos": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: false, owner: "delegated" },
+  }, // groove.pos
+  "parts[].features[].width": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: true, owner: "generic" },
+  }, // groove.width
+  "parts[].features[].depth": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: true, owner: "generic" },
+  }, // groove.depth / hole.depth
+  "parts[].features[].from": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: false, owner: "delegated" },
+  }, // groove.from
+  "parts[].features[].to": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: false, owner: "delegated" },
+  }, // groove.to
+  "parts[].features[].x": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: false, owner: "delegated" },
+  }, // hole.x（エイリアス不可）
+  "parts[].features[].y": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: false, owner: "delegated" },
+  }, // hole.y（エイリアス不可）
+  "parts[].features[].dia": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: true, owner: "generic" },
+  }, // hole.dia
+  "assemblies[].marks[].x": {
+    kind: "positional",
+    axis: "x",
+    constraint: { min: 0, exclusive: false, owner: "delegated" },
+  },
+  "assemblies[].marks[].y": {
+    kind: "positional",
+    axis: "y",
+    constraint: { min: 0, exclusive: false, owner: "delegated" },
+  },
+  "assemblies[].marks[].w": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: true, owner: "delegated" },
+  },
+  "assemblies[].marks[].h": {
+    kind: "context-free",
+    constraint: { min: 0, exclusive: true, owner: "delegated" },
+  },
 };
+
+/**
+ * D3: schema.ts の `exprField` が数値ブランチの `minimum`/`exclusiveMinimum` を
+ * 導出するための唯一の経路。`EXPR_FIELD_CAPABILITIES` のキー形式（配列添字を
+ * 含まない静的パターン）をそのまま受け取る（schema.ts はインスタンス path では
+ * なく静的なフィールド定義を組み立てるため、`toFieldExprPattern` を経由する
+ * 必要がない）。`constraint` を持たないキー（`vars.*`）には `{}` を返す。
+ */
+export function numberBranchConstraints(pattern: string): Record<string, number> {
+  const constraint = EXPR_FIELD_CAPABILITIES[pattern]?.constraint;
+  if (constraint === undefined) {
+    return {};
+  }
+  return constraint.exclusive ? { exclusiveMinimum: constraint.min } : { minimum: constraint.min };
+}
 
 /**
  * 実 path（`formatJsonPath` 形式、例: `"parts[2].features[0].pos"`）を

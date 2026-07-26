@@ -67,7 +67,7 @@ describe("EXPR_FIELD_CAPABILITIES（フィールド能力テーブル）", () =>
 
   it("context-free と分類されるべきフィールドがすべて context-free である", () => {
     for (const key of expectedContextFree) {
-      expect(EXPR_FIELD_CAPABILITIES[key]).toEqual({ kind: "context-free" });
+      expect(EXPR_FIELD_CAPABILITIES[key]?.kind, key).toBe("context-free");
     }
   });
 
@@ -75,17 +75,64 @@ describe("EXPR_FIELD_CAPABILITIES（フィールド能力テーブル）", () =>
     expect(EXPR_FIELD_CAPABILITIES["assemblies[].marks[].x"]).toEqual({
       kind: "positional",
       axis: "x",
+      constraint: { min: 0, exclusive: false, owner: "delegated" },
     });
     expect(EXPR_FIELD_CAPABILITIES["assemblies[].marks[].y"]).toEqual({
       kind: "positional",
       axis: "y",
+      constraint: { min: 0, exclusive: false, owner: "delegated" },
     });
   });
 
   it("hole.x/hole.y（parts[].features[].x/y）は position ではなく context-free（エイリアス不可）", () => {
     // SPECS.md §4d:242「hole.x/hole.y・groove.pos には揃えエイリアスを許可しない」
-    expect(fieldExprCapability("parts[0].features[1].x")).toEqual({ kind: "context-free" });
-    expect(fieldExprCapability("parts[0].features[1].y")).toEqual({ kind: "context-free" });
+    expect(fieldExprCapability("parts[0].features[1].x")?.kind).toBe("context-free");
+    expect(fieldExprCapability("parts[0].features[1].y")?.kind).toBe("context-free");
+  });
+
+  // ---------------------------------------------------------------------------
+  // D0/D3（Fable-tier Supervisor 裁定）: 値域（min/exclusive）＋検査所有者
+  // （generic/delegated）がテーブルの唯一のソースであることの固定。
+  // ---------------------------------------------------------------------------
+  it("D3: 各フィールドの値域（min/exclusive）と検査所有者（generic/delegated）が確定した分類と一致する", () => {
+    // owner: "delegated" の根拠（実機で checkGroove/checkHole/checkMarksGeometry の
+    // 各コードを突き合わせて確認済み。詳細は報告参照）:
+    // - pos/from/to/hole.x/hole.y: 占有範囲検査（pos±width/2 等）が half>=0
+    //   （width/dia 自体は generic で別途保証）の下で当該フィールド単体の負値も
+    //   構造的に検出する。
+    // - marks.x/y/w/h: checkMarksGeometry が最終値に対し x>=0/y>=0/w>0/h>0 を直接
+    //   検査する（SPECS.md §4c:228 の逐語実装）。
+    // それ以外は下限検査が既存 check* に無いため generic（stage 8 が権威）。
+    const expected: Record<
+      string,
+      { min: number; exclusive: boolean; owner: "generic" | "delegated" } | undefined
+    > = {
+      "vars.*": undefined,
+      "settings.kerf": { min: 0, exclusive: false, owner: "generic" },
+      "settings.edgeTrim": { min: 0, exclusive: false, owner: "generic" },
+      "stocks[].length": { min: 0, exclusive: true, owner: "generic" },
+      "stocks[].width": { min: 0, exclusive: true, owner: "generic" },
+      "stocks[].thickness": { min: 0, exclusive: true, owner: "generic" },
+      "parts[].length": { min: 0, exclusive: true, owner: "generic" },
+      "parts[].width": { min: 0, exclusive: true, owner: "generic" },
+      "parts[].features[].pos": { min: 0, exclusive: false, owner: "delegated" },
+      "parts[].features[].width": { min: 0, exclusive: true, owner: "generic" },
+      "parts[].features[].depth": { min: 0, exclusive: true, owner: "generic" },
+      "parts[].features[].from": { min: 0, exclusive: false, owner: "delegated" },
+      "parts[].features[].to": { min: 0, exclusive: false, owner: "delegated" },
+      "parts[].features[].x": { min: 0, exclusive: false, owner: "delegated" },
+      "parts[].features[].y": { min: 0, exclusive: false, owner: "delegated" },
+      "parts[].features[].dia": { min: 0, exclusive: true, owner: "generic" },
+      "assemblies[].marks[].x": { min: 0, exclusive: false, owner: "delegated" },
+      "assemblies[].marks[].y": { min: 0, exclusive: false, owner: "delegated" },
+      "assemblies[].marks[].w": { min: 0, exclusive: true, owner: "delegated" },
+      "assemblies[].marks[].h": { min: 0, exclusive: true, owner: "delegated" },
+    };
+
+    expect(Object.keys(EXPR_FIELD_CAPABILITIES).sort()).toEqual(Object.keys(expected).sort());
+    for (const [key, constraint] of Object.entries(expected)) {
+      expect(EXPR_FIELD_CAPABILITIES[key].constraint, key).toEqual(constraint);
+    }
   });
 
   it("列挙にないフィールド（price/qty/contains個数/candidates/rot 等）は undefined（式不可）", () => {
@@ -105,8 +152,8 @@ describe("EXPR_FIELD_CAPABILITIES（フィールド能力テーブル）", () =>
   });
 
   it("実 path から fieldExprCapability を引ける（配列添字が異なっても同じ結果）", () => {
-    expect(fieldExprCapability("stocks[0].length")).toEqual({ kind: "context-free" });
-    expect(fieldExprCapability("stocks[7].length")).toEqual({ kind: "context-free" });
+    expect(fieldExprCapability("stocks[0].length")?.kind).toBe("context-free");
+    expect(fieldExprCapability("stocks[7].length")?.kind).toBe("context-free");
     expect(fieldExprCapability("vars.inset")).toEqual({ kind: "context-free" });
   });
 });
@@ -391,7 +438,7 @@ describe("拒否の網羅（SPECS.md §4d が明示的に禁じた表現）", ()
     if (r.ok) {
       const result = evaluateExpr(r.expr, {}); // axis 省略＝文脈非依存式としての評価
       expect(result.ok).toBe(false);
-      expect(fieldExprCapability("parts[0].features[0].x")).toEqual({ kind: "context-free" });
+      expect(fieldExprCapability("parts[0].features[0].x")?.kind).toBe("context-free");
     }
   });
 
@@ -401,7 +448,7 @@ describe("拒否の網羅（SPECS.md §4d が明示的に禁じた表現）", ()
     if (r.ok) {
       const result = evaluateExpr(r.expr, {});
       expect(result.ok).toBe(false);
-      expect(fieldExprCapability("parts[0].features[0].pos")).toEqual({ kind: "context-free" });
+      expect(fieldExprCapability("parts[0].features[0].pos")?.kind).toBe("context-free");
     }
   });
 

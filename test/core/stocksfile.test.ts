@@ -287,6 +287,40 @@ parts:
 });
 
 // ---------------------------------------------------------------------------
+// D0/D4: 式解決後の値への制約再適用（stage 8 の generic 検査）は、正本インライン
+// の stocks だけでなく stocksFile 参照先の stocks にも及ぶ（対称性）。
+//
+// 受入ゲートのブリーフ（D1 の11フィールド一覧）は stocksFile 経由かどうかを
+// 明示的に区別していないが、`resolveStock` は正本インライン・stocksFile 参照先の
+// 両方から同じ関数を通る（このファイル冒頭の「正常系」テスト群が示すとおり）。
+// generic 検査を正本側にしか実装しないと、この関数を経由する同型の穴が
+// stocksFile 側にだけ残ってしまうため、`loadStocksFile`（src/core/loader.ts）内で
+// スコープを閉じた形で同じ検査を実行するよう実装した（詳細は報告参照）。
+// ---------------------------------------------------------------------------
+describe("D0/D4: stocksFile 参照先の length/width/thickness も式経由の負値を検出する（正本側との対称性）", () => {
+  it("参照先 stocks[].length を式（負値）にすると error になる", () => {
+    write(
+      "stocks.yaml",
+      '  stocks:\n    - { id: s1, label: 板, kind: sheet, length: "5 - 100", width: 910, thickness: 18 }\n',
+    );
+    const p = writeProject(`
+stocksFile: ./stocks.yaml
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
+stocks: []
+parts:
+  - { id: p1, label: 部材, qty: 1, stock: s1, length: 100, width: 100 }
+`);
+    const err = loadError(p);
+    expect(
+      err.issues.some(
+        (i) => i.path === "stocksFile" && i.message.includes("より大きい必要があります"),
+      ),
+      JSON.stringify(err.issues),
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 直接 API
 // ---------------------------------------------------------------------------
 

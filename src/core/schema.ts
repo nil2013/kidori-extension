@@ -23,6 +23,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { numberBranchConstraints } from "./expr";
 import { BASE_SCHEMA_FILENAME } from "./kidorifile";
 
 /** Draft 2020-12 の $schema URI。 */
@@ -60,23 +61,26 @@ const EXPR_HINT_POSITIONAL =
  * §4d:244「文脈非依存式を受け付けるフィールド」を数値ブランチ＋文字列ブランチの
  * `oneOf` として表現する。
  *
- * - 数値ブランチの制約（`minimum`/`exclusiveMinimum` 等）は**維持する**
- *   （Supervisor 裁定 D1。リテラル値の層1診断を退行させないため）。
+ * - 数値ブランチの制約（`minimum`/`exclusiveMinimum`）は**維持する**
+ *   （Supervisor 裁定 D1。リテラル値の層1診断を退行させないため）。ただし
+ *   D3 裁定（本エンジンの反転）により、値は呼び出し側がここへ直接渡すのではなく
+ *   `EXPR_FIELD_CAPABILITIES[pattern].constraint` から `numberBranchConstraints`
+ *   （`src/core/expr.ts`）が導出する。二重管理（schema.ts が制約を持ち、
+ *   expr.ts が式可否を持つ）を、`EXPR_FIELD_CAPABILITIES` を唯一の値域ソースと
+ *   する導出関係に変えることで構造的にずれなくする。
  * - 文字列ブランチは `type: "string"` のみ（Supervisor 裁定 D2。文法・字句の
  *   権威は層2の式パーサに置く。層1はここで「文字列である」ことしか縛らない）。
  * - `pattern` は付けない（このモジュール冒頭のコメント、および報告を参照）。
  *
- * `numberSchema` に `type` を含めないこと（呼び出し側が `minimum` 等の制約のみを
- * 渡し、本関数が `type: "number"` を補う）。
+ * @param pattern `EXPR_FIELD_CAPABILITIES` のキー形式（例: `"settings.kerf"`、
+ *   `"parts[].features[].pos"`）。数値ブランチの制約はこのキーの `constraint`
+ *   から導出する（無ければ制約なし＝任意の数値）。
  */
-function exprField(
-  numberConstraints: Record<string, unknown>,
-  description: string,
-): Record<string, unknown> {
+function exprField(pattern: string, description: string): Record<string, unknown> {
   return {
     description,
     oneOf: [
-      { type: "number", ...numberConstraints },
+      { type: "number", ...numberBranchConstraints(pattern) },
       { type: "string", minLength: 1 },
     ],
   };
@@ -259,12 +263,12 @@ function grooveSchema(): Record<string, unknown> {
       type: { const: "groove", description: DESCRIPTIONS["features.type"] },
       face: { enum: ["front", "back"], description: DESCRIPTIONS["groove.face"] },
       dir: { enum: ["across", "along"], description: DESCRIPTIONS["groove.dir"] },
-      pos: exprField({ minimum: 0 }, DESCRIPTIONS["groove.pos"]),
-      width: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["groove.width"]),
-      depth: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["groove.depth"]),
+      pos: exprField("parts[].features[].pos", DESCRIPTIONS["groove.pos"]),
+      width: exprField("parts[].features[].width", DESCRIPTIONS["groove.width"]),
+      depth: exprField("parts[].features[].depth", DESCRIPTIONS["groove.depth"]),
       end: { enum: ["through", "stopped"], description: DESCRIPTIONS["groove.end"] },
-      from: exprField({ minimum: 0 }, DESCRIPTIONS["groove.from"]),
-      to: exprField({ minimum: 0 }, DESCRIPTIONS["groove.to"]),
+      from: exprField("parts[].features[].from", DESCRIPTIONS["groove.from"]),
+      to: exprField("parts[].features[].to", DESCRIPTIONS["groove.to"]),
     },
   };
 }
@@ -277,15 +281,17 @@ function holeSchema(): Record<string, unknown> {
     properties: {
       type: { const: "hole", description: DESCRIPTIONS["features.type"] },
       face: { enum: ["front", "back"], description: DESCRIPTIONS["hole.face"] },
-      x: exprField({ minimum: 0 }, DESCRIPTIONS["hole.x"]),
-      y: exprField({ minimum: 0 }, DESCRIPTIONS["hole.y"]),
-      dia: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["hole.dia"]),
+      x: exprField("parts[].features[].x", DESCRIPTIONS["hole.x"]),
+      y: exprField("parts[].features[].y", DESCRIPTIONS["hole.y"]),
+      dia: exprField("parts[].features[].dia", DESCRIPTIONS["hole.dia"]),
       // depth は省略可（貫通の意味で null）。数値ブランチに "null" を含めるのは
       // exprField の型（number 固定）に合わないため、ここだけ手組みの oneOf にする。
+      // 制約は groove.depth と同じ EXPR_FIELD_CAPABILITIES キーを共有するため
+      // numberBranchConstraints から導出する（D3。二重管理を避ける）。
       depth: {
         description: DESCRIPTIONS["hole.depth"],
         oneOf: [
-          { type: ["number", "null"], exclusiveMinimum: 0 },
+          { type: ["number", "null"], ...numberBranchConstraints("parts[].features[].depth") },
           { type: "string", minLength: 1 },
         ],
       },
@@ -317,11 +323,11 @@ function markSchema(): Record<string, unknown> {
     face: { enum: ["front", "back"], description: DESCRIPTIONS["marks.face"] },
     x: {
       default: 0,
-      ...exprField({ minimum: 0 }, DESCRIPTIONS["marks.x"]),
+      ...exprField("assemblies[].marks[].x", DESCRIPTIONS["marks.x"]),
     },
     y: {
       default: 0,
-      ...exprField({ minimum: 0 }, DESCRIPTIONS["marks.y"]),
+      ...exprField("assemblies[].marks[].y", DESCRIPTIONS["marks.y"]),
     },
     rot: {
       enum: [0, 90],
@@ -351,8 +357,8 @@ function markSchema(): Record<string, unknown> {
         required: ["on", "face"],
         properties: {
           ...common,
-          w: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["marks.w"]),
-          h: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["marks.h"]),
+          w: exprField("assemblies[].marks[].w", DESCRIPTIONS["marks.w"]),
+          h: exprField("assemblies[].marks[].h", DESCRIPTIONS["marks.h"]),
         },
       },
     ],
@@ -404,9 +410,9 @@ function stockSchema(): Record<string, unknown> {
       },
       label: { type: "string", description: DESCRIPTIONS["stocks.label"] },
       kind: { enum: ["bar", "sheet"], description: DESCRIPTIONS["stocks.kind"] },
-      length: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["stocks.length"]),
-      width: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["stocks.width"]),
-      thickness: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["stocks.thickness"]),
+      length: exprField("stocks[].length", DESCRIPTIONS["stocks.length"]),
+      width: exprField("stocks[].width", DESCRIPTIONS["stocks.width"]),
+      thickness: exprField("stocks[].thickness", DESCRIPTIONS["stocks.thickness"]),
       // price は§4d:246 によりリテラル限定（式不可）。number|string の union にしない。
       price: {
         type: ["number", "null"],
@@ -443,8 +449,8 @@ function partSchema(stockIds: readonly string[]): Record<string, unknown> {
         description: DESCRIPTIONS["parts.qty"],
       },
       stock: stockProp,
-      length: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["parts.length"]),
-      width: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["parts.width"]),
+      length: exprField("parts[].length", DESCRIPTIONS["parts.length"]),
+      width: exprField("parts[].width", DESCRIPTIONS["parts.width"]),
       // rot は§4d:246 によりリテラル限定（式不可）。
       rot: { type: "boolean", default: true, description: DESCRIPTIONS["parts.rot"] },
       features: {
@@ -518,11 +524,11 @@ export function buildSchema(stockIds: readonly string[]): Record<string, unknown
         properties: {
           kerf: {
             default: 3.0,
-            ...exprField({ minimum: 0 }, DESCRIPTIONS["settings.kerf"]),
+            ...exprField("settings.kerf", DESCRIPTIONS["settings.kerf"]),
           },
           edgeTrim: {
             default: 5.0,
-            ...exprField({ minimum: 0 }, DESCRIPTIONS["settings.edgeTrim"]),
+            ...exprField("settings.edgeTrim", DESCRIPTIONS["settings.edgeTrim"]),
           },
           // candidates は§4d:246 によりリテラル限定（式不可）。
           candidates: {
