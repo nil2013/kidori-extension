@@ -1253,7 +1253,7 @@ function semanticValidate(project: Project, raw: Record<string, unknown>): Issue
 /** stocksFile 由来の Issue はすべてこのパスに載せる（正本側の当該行を指す）。 */
 const STOCKS_FILE_PATH = "stocksFile";
 
-function stocksFileIssue(message: string, severity: "error" | "warning"): Issue {
+function stocksFileIssue(message: string, severity: Issue["severity"]): Issue {
   return { path: STOCKS_FILE_PATH, message, severity };
 }
 

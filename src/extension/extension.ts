@@ -394,6 +394,27 @@ function locateIssue(document: vscode.TextDocument, issuePath: string): vscode.R
   return zero;
 }
 
+/**
+ * `Issue.severity` → VS Code の `DiagnosticSeverity` への対応（U-HINT）。
+ *
+ * "error" → Error、"warning" → Warning は既存の対応を維持し、新設の "hint" は
+ * `DiagnosticSeverity.Hint` に対応づける（Information は使わない。Information は
+ * 規格材シャドウ通知（presets.ts の StockShadowReporter）が既に専有しているため、
+ * 両者を区別できるようにする）。
+ */
+export function issueSeverityToDiagnosticSeverity(
+  severity: Issue["severity"],
+): vscode.DiagnosticSeverity {
+  switch (severity) {
+    case "error":
+      return vscode.DiagnosticSeverity.Error;
+    case "warning":
+      return vscode.DiagnosticSeverity.Warning;
+    case "hint":
+      return vscode.DiagnosticSeverity.Hint;
+  }
+}
+
 async function applyDiagnostics(projectPath: string, issues: Issue[]): Promise<void> {
   const uri = vscode.Uri.file(projectPath);
   const document = await vscode.workspace.openTextDocument(uri);
@@ -401,9 +422,7 @@ async function applyDiagnostics(projectPath: string, issues: Issue[]): Promise<v
     const d = new vscode.Diagnostic(
       locateIssue(document, issue.path),
       `${issue.path}: ${issue.message}`,
-      issue.severity === "error"
-        ? vscode.DiagnosticSeverity.Error
-        : vscode.DiagnosticSeverity.Warning,
+      issueSeverityToDiagnosticSeverity(issue.severity),
     );
     d.source = "kidori";
     return d;

@@ -42,15 +42,24 @@ function parseSingleFileArg(command: string, args: string[]): string {
 export interface CheckDiagnostic {
   path: string;
   line: number | null;
-  severity: "error" | "warning";
+  severity: "error" | "warning" | "hint";
   message: string;
 }
 
-/** `kidori check` の出力全体。 */
+/**
+ * `kidori check` の出力全体。
+ *
+ * `errorCount`/`warningCount` は既存の意味（それぞれ severity が厳密に一致する
+ * 診断の件数）を変えない（U-HINT 導入前と同じ消費者互換性）。hint は独立した
+ * `hintCount` に計上し、`warningCount` には混ぜない（hint は warning より弱い
+ * 情報であり、既存の warningCount 消費者に「warning が増えた」と誤解させない
+ * ため）。
+ */
 export interface CheckResult {
   file: string;
   errorCount: number;
   warningCount: number;
+  hintCount: number;
   diagnostics: CheckDiagnostic[];
 }
 
@@ -131,10 +140,23 @@ export function runCheck(
     ];
   }
 
+  // 各カウントは severity の厳密一致（否定形にしない）。hint を warning 側の
+  // 否定形カウント（"!== error"）に含めてしまうと hint が warningCount に
+  // 混入するため、3値それぞれを独立に数える（U-HINT）。
   const errorCount = diagnostics.filter((d) => d.severity === "error").length;
-  const warningCount = diagnostics.length - errorCount;
-  const result: CheckResult = { file: target, errorCount, warningCount, diagnostics };
+  const warningCount = diagnostics.filter((d) => d.severity === "warning").length;
+  const hintCount = diagnostics.filter((d) => d.severity === "hint").length;
+  const result: CheckResult = {
+    file: target,
+    errorCount,
+    warningCount,
+    hintCount,
+    diagnostics,
+  };
   log(JSON.stringify(result, null, 2));
+  // exit code は severity === "error" の有無のみで決める（設計裁定 D3）。
+  // warning・hint はどちらも error 扱いにしない（否定形 "!== error" ではなく
+  // errorCount > 0 という肯定形の判定なので、hint 追加後もここは安全）。
   return errorCount > 0 ? 1 : 0;
 }
 
