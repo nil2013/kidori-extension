@@ -33,11 +33,11 @@ Python・cairo 等の追加ランタイムは不要。PNG 変換は拡張内の 
 git clone <このリポジトリのURL> kidori-extension
 cd kidori-extension
 npm install
-npm run package        # dist/ をビルドして kidori-0.6.0.vsix を生成
-code --install-extension kidori-0.6.0.vsix
+npm run package        # dist/ をビルドして kidori-0.7.0.vsix を生成
+code --install-extension kidori-0.7.0.vsix
 ```
 
-ファイル名のバージョン番号は `package.json` の `version` に追従する（現行 0.6.0）。
+ファイル名のバージョン番号は `package.json` の `version` に追従する（現行 0.7.0）。
 
 注意: resvg-js はプラットフォーム別のネイティブバイナリを含むため、`.vsix` は生成したマシンと同じ OS/アーキテクチャでのみ PNG 出力が有効になる。**PNG は確定要件**であり、既定設定（`kidori.png.enabled: true` / CLI 既定）のまま resvg-js が利用できない環境では、SVG すら生成せずビルド全体をエラーにする（古い図面が最新のように残るのを防ぐため）。その環境で図面だけ生成したい場合は PNG を無効化する（CLI: `--no-png`、拡張: 設定 `kidori.png.enabled: false`）。
 
@@ -178,7 +178,7 @@ assemblies:
 - **`assemblies[].contains`**: 形状 id → 個数のマップ。「このひと組（assembly）に、どの形状が何個入るか」の宣言。`leg`/`beam-top`/`beam-foot` は `parts` に `qty` を書いていない（省略時は全 assembly の `contains` 合計から導出される。上の例なら `leg` は 2×2=4 個）。割付は導出後の合計数だけを見るため、`beam-top` を「天板1」「天板2」のように形状として複製する必要はない。
 - **`assemblies[].marks`**: 切削を伴わない当たり面・位置のマーキング（取り付けシロ）。`on`（対象形状 id）・`face`・`x`/`y`（領域左下角、省略時0）を指定し、領域の大きさは `w`/`h` を直接書くか、`ref: <形状id>` で相手部材の断面寸法（厚み×実効幅）から自動導出させる。上の例の `ref: leg` は 2×4 材（厚み38×幅89）の断面を指し、`leg` の寸法を変えれば追従する。marks は**加工指示図にのみ**破線／ハッチングで描画され（木取り図には出ない）、割付・歩留まり・カット回数には一切影響しない。
 - **`marks[].rot`**（`0`／`90`、既定 `0`）: 当たり面の面内回転。`ref` 導出時に断面の幅・厚みを w/h のどちらに割り当てるかを確定するほか、`w`/`h` の直接指定にも同様に適用される（swap する）。上の例の `uma-2` は互い違いに噛み合う「ねじれ」の組み方で、足の木口断面を `rot: 90` で面内回転させて天板に当てている。
-- **`marks[].x`／`marks[].y` の端揃えエイリアス**: 数値の代わりに `x: left`／`x: right`、`y: bottom`／`y: top` を指定できる。近い側の端（`left`/`bottom`）は `0`、遠い側の端（`right`/`top`）は面寸法から領域寸法（`rot` 適用後の w/h）を引いた位置に解決される。上の例の `y: top` は天板の上端に足当たり面を揃える指定で、参照先（`leg`）の寸法変更にも自動追従する。
+- **`marks[].x`／`marks[].y` の端揃えエイリアス**: 数値の代わりに `x: left`／`x: center`／`x: right`、`y: bottom`／`y: center`／`y: top` を指定できる。近い側の端（`left`/`bottom`）は `0`、遠い側の端（`right`/`top`）は面寸法から領域寸法（`rot` 適用後の w/h）を引いた位置に解決される。`center` は面寸法の1/2ではなく、`(面寸法 − 領域寸法) ÷ 2` に解決される（marks は矩形領域なので、点ではなく領域全体を中央に揃える）。上の例の `y: top` は天板の上端に足当たり面を揃える指定で、参照先（`leg`）の寸法変更にも自動追従する。
 - **assembly ごとの変種面**: 同じ形状でも assembly によってマーク位置が異なる場合（上の例の `beam-top` は `uma-1` と `uma-2` でマーク位置 `x` が違う）、加工指示図は assembly 単位の変種面として出力される（`parts/uma-1-beam-top.svg` / `parts/uma-2-beam-top.svg`）。マークを持たない形状（上の例の `leg`・`beam-foot`）は従来どおり形状ごとに1面（`parts/leg.svg` 等）。
 - **一括挿入**: コマンドパレットの「kidori: 構成を挿入（parts＋assembly の雛形）」で、上記と同じ形（`leg`/`beam-top`/`beam-foot` 相当）の `parts`＋`assembly` の雛形をタブストップ付きスニペットとして挿入できる。展開後はただの YAML で、マクロ的な参照や独自構文は残らない。
 
