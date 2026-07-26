@@ -88,3 +88,54 @@ F1. 途中値負→最終値有効の acceptance test missing (§4c:228/§4d:270
 F2. 13 stale SPECS line citations (pre-5489ba5 numbering) in 7 files: build.ts:15,81(§6:247→302) :438,447(217→231) :816(§4c:216→230); metrics.ts:124(§4c:212→223,§6:246→301) :128(211→222) :180(246→301) :533(212→223); assemblySnippet.ts:7(271→§8:326) :16(160→166); dimension.test.ts:341(215→229); build.test.ts:705(215→229) :803(211→222). Claims content-correct, numbers stale. Mechanical sweep (sonnet/haiku). assemblySnippet is repeat offender — prefer §+引用句 form there.
 F3. U-DOCS must ensure README covers --resolved & schemaVersion 0.5 (§3b:100 sub-bullet of check); audit after landing.
 Judge-probe list handed to Main (see reply): mixed --resolved ✓, intermediate-negative ✗(F1), hint exit 0 (checkHint), fingerprint converse (adoption tests, spot-check), capability table vs §4d:244 diff, scaffold check-clean under 0.5, hover exact format, through+from/to as exprs.
+
+## Gate FAIL consultation (floor item 5) — resolved-value constraint bypass
+Independently confirmed root cause by code reading (no rerun of judge repro needed — hole holds by construction): resolveRequiredNum returns value; no positivity re-check downstream; checkPhysicalFit upper-bound only; checkGroove depth has no lower bound; no `maximum` constraints exist on expr fields (grep); settings.kerf/edgeTrim resolved via resolveNumWithDefault with no domain check.
+Q1: WORK defect confirmed. Verbatim anchors: §4d:260 AND §4d:273「最終負値・範囲外を診断する」(second, general clause — makes classification unambiguous).
+Q2: Account confirmed AND extended: my C2-Q2a ruling stated the layer-2 post-resolution check; my own step-1 triage carved no unit for it, and my pre-flight claimed "実装漏れなし" (now falsified) and my judge-probe list missed the literal-vs-expr asymmetry. Shared miss: Supervisor stated once, never tracked; Main never briefed it. Process fix: consultation rulings must be expanded into task items (step-3 discipline applied to advice).
+Q4 sweep (complete enumeration of layer-1 numeric-branch constraints on expr-capable fields):
+BYPASSABLE (10 — judge listed 9; +groove.depth found by me): settings.kerf, settings.edgeTrim, stocks[].length/width/thickness, parts[].length, parts[].width, groove.width, groove.depth, hole.dia, hole.depth.
+DELEGATED-COVERED (7): groove.pos (range lo<-EPS), groove.from/to (0<=from<to<=dim), hole.x/y (xLo/yLo), marks x/y/w/h (checkMarksGeometry). Each needs a canary test (expr-negative caught).
+Class closure: numeric branch constraints are only minimum/exclusiveMinimum (no maximum); integer/enum/pattern fields are not expr-capable; NaN-from-failed-expr always accompanied by error. Additional members of same class the "negative" framing misses: (i) zero via expr on exclusiveMinimum fields (e.g. "$a" with a=0 on parts.length), (ii) non-finite overflow (309-digit literal sums). Fix must re-apply constraints, not test "negative".
+Q3 design ruling: single source = EXPR_FIELD_CAPABILITIES extended with domain {min, exclusive} + owner (generic|delegated); INVERT exprField to derive schema numeric branch from the table (drift impossible both directions); generic step-8 check on expression-authored paths only (collect resolvedPaths at resolveRequiredNum on string input — trace keys insufficient: finiteness guard excludes non-finite); EPS semantics min: v<min-EPS, excl: v<=min+EPS; !isFinite -> error; literals stay layer-1 (no double report), delegated skipped (no intra-layer double), canaries prove delegation. Tests: 10 bypass + 7 canary + zero-via-expr + literal-single-report.
+Re-gate: fresh agents, ratchet criterion to demand per-field displayed proof; zero-base evidence (Reject invalidates prior claims).
+
+## Re-pre-flight (zero-base, post-869d9fe)
+Own measurements: npm test 863/38 green; typecheck 0; targeted run loader+stocksfile+expr 189/189; assets diff in commit EMPTY (byte-identical) + manifest green => schema semantics unchanged (R5 closed at strongest evidence level).
+R1 inventory (promise recovered, file:line, all executed by me):
+- 途中値 acceptance loader.test.ts:1209 (F1 landed, c8f71bd)
+- bypass 11: loader.test.ts 1281(kerf) 1289(edgeTrim) 1297/1305/1313(stocks l/w/t) 1321(parts.length) 1329(parts.width) 1337(groove.width) 1345(groove.depth) 1353(hole.dia) 1361(hole.depth)
+- canaries 9: 1376(pos) 1393(from) 1404(to) 1415(hole.x) 1431(hole.y) 1460(marks.x) 1474(marks.y) 1488(marks.w) 1502(marks.h) — each asserts delegation fires AND generic marker absent (true dedup assertion)
+- zero-via-expr 1522; literal-single-report 1537 (asserts exactly 1 issue at path); Infinity 1551 (plain-decimal 10^308+10^308)
+- stocksfile.test.ts: 1 new it (length only — behavior covers l/w/t via shared resolveStock; coverage partial, minor)
+- expr.test.ts: D3 table-classification test
+COUNT CORRECTIONS ACKNOWLEDGED: my "10フィールド" heading listed 11; my "(7)" delegated heading enumerated 9. Implementer's 11/9 correct; my lists were right, my arithmetic wrong. Twice.
+R2: no `maximum` anywhere in schema.ts (re-grep); table→schema derivation structural + assets byte-identity chains to my U-SCHEMA constraint verification. 19 constrained + vars.* unconstrained = 20 entries. Delegation interlock (pos/x/y rely on width/dia half>=0, guaranteed by their generic constraints) verified against checkGroove/checkHole.
+R3: loadStocksFile hole CONFIRMED genuine (missed by judge D1 AND my Q4 — my sweep covered main-file fields only; external resolveStock ran with no constraint check). Fix at loader +433/+435 applies checkExprFieldConstraints to external values. Call-site sweep: resolveFieldExpr/resolveVars consumed ONLY by loader.ts; hover/live-diag consume loadProjectFromRaw; no other resolution surface exists.
+R4: verified by assertion-reading + execution (not narration).
+R5: byte-identical assets == zero semantic change. dist/cli.js verified fresh BY CONTENT (contains checkExprFieldConstraints + 式-escaped message; naive grep for raw Japanese gives false negative — unicode escapes).
+R6 fresh axes (representation-pair invariance framing): (i) YAML/JSON — §4d:259 dup-vars verbatim gap = TOP residual risk (C5 recorded limitation); contingency: bounded vars-only JSON raw-scan; recommend offering user a pre-gate decision. (ii) literal/expr closed by fix. (iii) inline/stocksFile closed by R3. (iv) CLI/extension single impl. (v) check/build shared loader. Secondary: domain-violating value visible in resolvedValues/hover (−95 + error) — defensible, rationale prepared. Recommend deliberate rebuild of dist before gate; ratchet criterion to fixed 11+9 field list.
+
+## 本エンゲージメントで受けた訂正（オーナー発。Main が逐語で伝達）
+
+**この項目は「ユーザーに諮るな」という一般則ではない。読み違えないこと。**
+訂正の対象は「**決着済みの論点を、自分のリスクを下げる目的で蒸し返した**」という特定の誤用である。
+エスカレーションの義務そのものは一切変わっていない。**判断が真にユーザーのものであるとき
+（指示の欠陥・スコープ衝突・アーティファクトでは決着しない価値判断・取り返しのつかない操作）は、
+従来どおり必ず諮ること。** 諮問を控えることが自己目的化したら、それはこの訂正の誤用である。
+
+オーナーの言（要旨）: 人間への諮問を「最も安い de-risk」と呼ぶのは人間をローコスト計算機扱い
+しており不当。人間に諮ることは**最大コスト**として扱え。
+
+私（Supervisor）の誤り: R6 で「ゲート前にユーザーへ諮るのが最も安い de-risk」と推奨した。
+C5 で既に決着していた論点（JSON 重複キーの受容）を、ゲート FAIL のリスクを恐れて蒸し返し、
+その保険料を人間の注意で払わせようとした。ゲートのリスクはプロセス（FAIL→分類→修正→再ゲート）
+が吸収すべきもので、人間に転嫁するものではない。決着済みの裁定を再開してよい根拠は
+**新しいアーティファクト・証拠**だけであり、恐れは根拠にならない。
+
+適用範囲: 本エンゲージメントにおける私の助言の出し方。後継の Supervisor がこのノートから
+起動する場合も、上記の「読み違えないこと」の但し書きごと引き継ぐこと。
+Owner's substantive ruling: accept as constraint WITH explicit spec-violation statement (stronger than C5 wording): "SPECS §4d:259『同名変数はエラー』を .kidori.json 入力について満たしていない".
+
+## C7 (documentation sites for the accepted violation)
+Ruling: 3 sites correct (resolveVars comment reworded to explicit non-conformance; README known-limitations entry; final report line). AGENTS.md: NO — rot argument governs: generated files are per-workdir snapshots never regenerated on upgrade; a later fix would leave false limitation claims scattered = exactly the §3b 残骸 class. Limitation notice ≠ spec summary, but the rot mechanism is identical; audience impact ≈ nil (machine-generated JSON cannot emit duplicate keys). Optional: final report may note SPECS annotation (e.g. §8) is owner's prerogative. Also: expr.test.ts:402 comment wording may be aligned in same commit (minor, optional). DESCRIPTIONS["vars"] does not overclaim (no 同名 mention) — leave untouched.

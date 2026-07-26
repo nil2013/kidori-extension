@@ -670,17 +670,22 @@ export function collectVarRefs(expr: ParsedExpr): Set<string> {
  *
  * - 変数名は `[A-Za-z_][A-Za-z0-9_]*` に一致しなければならない。不一致は error
  *   （trace には載せない。path は区画名のみの `"vars"`。D2）。
- * - 同名変数の検出について: JSON 入力は `JSON.parse` の時点で重複キーが
- *   silently 上書きされ（実機確認: `JSON.parse('{"a":1,"a":2}')` → `{a:2}`）、
- *   本関数が受け取る時点では既に情報が失われているため検出不能。YAML 入力は
- *   `yaml` パッケージ（`kidorifile.ts` が使用）の既定 `uniqueKeys: true` が
- *   `parse()` の時点で `YAMLParseError` を投げることを実機確認済み
- *   （`yaml.parse("vars:\n  a: 1\n  a: 2\n")` → `Map keys must be unique`）。
- *   したがって「同名変数はエラー」（SPECS.md §4d:259）は YAML では既に上流で
- *   保証されており、JSON では本質的に検出不能（kidori 全体に共通する JSON の
- *   一般的制約であり、本モジュール固有の欠落ではない）。この理由により
- *   `resolveVars` は `Record<string, number | string>` を受け取る単純な形とし、
- *   重複検出は実装しない（詳細は報告参照）。
+ * - **既知の仕様違反（オーナー裁定により制約として受容）**: SPECS.md §4d
+ *   「同名変数はエラー」は、`.kidori.json` 入力については**満たしていない**。
+ *   `.kidori.yaml`/`.yml` では `kidorifile.ts` が使う `yaml` パッケージの既定
+ *   `uniqueKeys: true` が `parse()` の時点で重複キーを `YAMLParseError` として
+ *   投げることを実機確認済み（`yaml.parse("vars:\n  a: 1\n  a: 2\n")` →
+ *   `Map keys must be unique`）ため、手書き正本の主経路である YAML では本条項は
+ *   上流で保証されている。一方 `.kidori.json` は `JSON.parse` が重複キーを
+ *   silently 上書きし（実機確認: `JSON.parse('{"a":1,"a":2}')` → `{a:2}`）、
+ *   本関数が受け取る `Record<string, number | string>` の時点で既に重複の痕跡が
+ *   失われているため、原理的に検出不能である。これは `resolveVars` 固有の
+ *   欠落ではなく、`vars` に限らず JSON 入力のあらゆるマップキー
+ *   （`assemblies[].contains` の形状 id 等）に及ぶ kidori 全体の JSON パーサ
+ *   制約であり、オーナーは「仕様違反状態にあることを明記した上で制約として
+ *   受容する」と裁定した。よって `resolveVars` は `Record<string, number |
+ *   string>` を受け取る単純な形のまま重複検出を実装しない（利用者向けの案内は
+ *   README.md「`.kidori.json` 入力の既知の制約」参照）。
  * - vars の値は文脈非依存式に限る（`axis` を渡さずに評価する）。位置エイリアスの
  *   使用は error になる（`evaluateExpr` が `axis` 未指定時に揃えエイリアスを
  *   一律拒否することで実現）。

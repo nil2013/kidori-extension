@@ -204,6 +204,12 @@ assemblies:
   - CLI は `kidori check --resolved <ファイル>` で、原式と解決値を `resolvedValues`（`path`・`expression`・`value`・`unit: mm`）として機械可読に取得できる。**診断（error/warning）の有無とは独立**に出力されるため、他の箇所に error があっても、解決に成功した式の `resolvedValues` は出る（詳細は「6. CLI」参照）。
 - **`schemaVersion` 0.5**: `vars`・寸法ミニ式は `meta.schemaVersion: "0.5"` で導入された（§「正本データ」参照）。`vars`／式を使わなければ 0.4 以前のファイルはそのまま有効な 0.5 のファイルでもある（不一致は警告のみで、ビルドは継続する）。
 
+### `.kidori.json` 入力の既知の制約（同名キーの重複検出漏れ）
+
+SPECS.md §4d「同名変数はエラー」は、`.kidori.json` 入力については**満たしていない**（既知の仕様違反として受容している）。`.kidori.yaml`/`.yml` は読み込みに使う `yaml` パッケージが重複キーを検出してエラーにするため（`kidori check` が該当ファイルをエラーで止める）、この規定は成立している。一方 `.kidori.json` はパースに標準の `JSON.parse` を使うため、`vars` に同名キーがあっても**最後の定義が黙って勝つ**（重複キーは検出時点で既に上書きされており、kidori 側には痕跡が渡らない）。
+
+同じ制約は `vars` に限らず、`.kidori.json` 入力のあらゆるマップキー（`assemblies[].contains` の形状 id 等）に及ぶ。SPECS.md §4a は `.json` 入力を「機械生成・他ツール連携用」と位置づけているため、**手書きの正本には YAML を使うこと**を推奨する。
+
 ### 採用案の無効化（設計変更後の再割付）
 
 `settings.selectedPlan` を設定した後に割付へ影響する編集（`parts`・`stocks`・`settings.kerf` 等）を行うと、記録済みの採用案は**設計変更後の割付とは無関係**とみなされる。次回ビルドは `selectedPlan` の指定を無視して全案（A/B/C、条件次第で X）を再生成し、`settings.selectedPlan` の位置に警告 Issue を出す。

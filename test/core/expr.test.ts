@@ -480,13 +480,18 @@ describe("拒否の網羅（SPECS.md §4d が明示的に禁じた表現）", ()
     ).toBe(true);
   });
 
-  it("同名変数（実装スコープの注記: JS Record 経由では JSON の重複キーは既に失われている）", () => {
+  it("同名変数（JS Record 経由では JSON の重複キーは既に失われている。既知の仕様違反として受容）", () => {
+    // SPECS.md §4d「同名変数はエラー」は .kidori.json 入力については満たしていない
+    // （オーナー裁定により既知の仕様違反として受容。単に「検出できない」のではなく
+    // 「仕様の条項を満たしていない」ことが裁定の要点。詳細は src/core/expr.ts の
+    // resolveVars コメント・README.md「.kidori.json 入力の既知の制約」参照）。
     // 実機確認: JSON.parse('{"a":1,"a":2}') は {a: 2} を返し重複情報は失われる。
     // yaml.parse は既定 uniqueKeys:true で重複キーを YAMLParseError にする
-    // （kidorifile.ts が使う "yaml" パッケージ、実機確認済み）。
-    // したがって resolveVars の入力段階では「同名変数」を検出する情報がそもそも
-    // 存在しない場合がある。ここでは resolveVars 自体が例外を投げず、後勝ちの
-    // 値をそのまま扱うことだけを確認する（実装上のスコープ境界。報告参照）。
+    // （kidorifile.ts が使う "yaml" パッケージ、実機確認済み）ため、YAML 側では
+    // この条項は上流で保証されている。resolveVars がここで受け取る Record の時点
+    // では JSON 由来の重複情報は既に失われているため、resolveVars 自体が例外を
+    // 投げず後勝ちの値をそのまま扱うことだけを確認する（e2e の回帰は
+    // test/core/loader.test.ts の readRaw テストが担う）。
     const resolution = resolveVars({ a: 2 });
     expect(resolution.values.a).toBe(2);
   });

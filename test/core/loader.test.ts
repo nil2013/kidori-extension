@@ -236,6 +236,22 @@ describe("基本の読込", () => {
     const path = writeText("{ broken", ".json");
     expect(() => readRaw(path)).toThrow();
   });
+
+  // SPECS.md §4d「同名変数はエラー」は .kidori.json 入力については満たしておらず、
+  // オーナー裁定により既知の仕様違反として受容されている（src/core/expr.ts の
+  // resolveVars コメント・README.md「.kidori.json 入力の既知の制約」参照）。
+  // ここでは JSON/YAML の非対称な挙動を回帰として固定する: 次に JSON パーサが
+  // 差し替えられた際、この制約が解消したのか悪化したのかを検知できるようにする。
+  it("readRaw: .json の vars 重複キーは silently 上書きされ検出されない（仕様違反として受容している既知の制約）", () => {
+    const path = writeText('{"vars": {"a": 1, "a": 2}}', ".json");
+    const raw = readRaw(path) as { vars: Record<string, number> };
+    expect(raw.vars).toEqual({ a: 2 }); // 後勝ち。重複していた痕跡は残らない
+  });
+
+  it("readRaw: .yaml の vars 重複キーは yaml パッケージの uniqueKeys:true が検出し例外を投げる（.json との対照）", () => {
+    const path = writeText("vars:\n  a: 1\n  a: 2\n", ".yaml");
+    expect(() => readRaw(path)).toThrow(/unique/i);
+  });
 });
 
 describe("loadProjectFromRaw の契約", () => {
