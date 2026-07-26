@@ -121,11 +121,11 @@ export interface AssemblyPartOut {
 }
 
 /**
- * summary.json の assemblies[] 1要素（SPECS.md §4c:212・§6:246
+ * summary.json の assemblies[] 1要素（SPECS.md §4c:223・§6:301
  * 「assembly 単位の部材内訳」）。
  *
  * 割付結果ではなく**構成の宣言**の機械可読な写しである。割付は導出後の合計数
- * しか見ないため（SPECS.md §4c:211）、ここに書かれる個数は plans[] のどの数値とも
+ * しか見ないため（SPECS.md §4c:222）、ここに書かれる個数は plans[] のどの数値とも
  * 直接は対応しない（Σ assemblies[].parts[].qty == parts[].qty は成り立つ）。
  */
 export interface AssemblyOut {
@@ -177,7 +177,7 @@ export interface Summary {
   rankedPlans: string[];
   exact: ExactInfo;
   /**
-   * assembly 単位の部材内訳（SPECS.md §6:246「`assemblies` 使用時は assembly 単位の
+   * assembly 単位の部材内訳（SPECS.md §6:301「`assemblies` 使用時は assembly 単位の
    * 部材内訳を含む」）。
    *
    * **`assemblies` 区画が無い正本では、このキー自体を出力しない**（空配列も出さない）。
@@ -530,7 +530,7 @@ export function rankPlans(
  * @param selectedPlanStale 採用案が設計変更で無効化されているか。
  */
 /**
- * assembly 単位の部材内訳を組み立てる（SPECS.md §4c:212）。
+ * assembly 単位の部材内訳を組み立てる（SPECS.md §4c:223）。
  *
  * 部材の並びは `contains` のキー順ではなく `project.parts` の宣言順にする
  * （YAML マップのキー順に依存させると、意味の変わらない編集で summary.json の

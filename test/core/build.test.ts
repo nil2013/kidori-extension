@@ -702,7 +702,7 @@ describe("build（v0.7: 変種面と基底面の出力集合）", () => {
 });
 
 describe("build（v0.7: marks は加工指示図のみ・割付に不干渉）", () => {
-  it("marks は木取り図 SVG には現れない（SPECS §4c:215）", () => {
+  it("marks は木取り図 SVG には現れない（SPECS §4c:229）", () => {
     const p = writeIn("cutplan", UMA_MARKED);
     const result = build(p, { png: false, log: silent });
 
@@ -800,7 +800,7 @@ parts:
 
   it("assemblies を足してもマークが無ければ加工指示図は1バイトも変わらない", () => {
     // 「assemblies の導入それ自体」が図面を動かさないことの担保
-    // （SPECS §4c:211「構成の区別が木取り図・歩留まりに影響することはない」）。
+    // （SPECS §4c:222「構成の区別が木取り図・歩留まりに影響することはない」）。
     const withAssemblies = `
 meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 settings: { kerf: 3, edgeTrim: 5, exact: off, selectedPlan: null }

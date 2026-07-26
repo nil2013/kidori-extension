@@ -26,6 +26,7 @@ import {
   loadProjectFromRaw,
   readRaw,
 } from "../../src/core/loader";
+import { resolveMarks } from "../../src/core/marks";
 import { DEFAULT_RANK, Groove } from "../../src/core/types";
 
 const EDGE_TRIM = 5;
@@ -1156,5 +1157,75 @@ describe("U-PIPE D6: フィンガープリントは原式ではなく解決値�
     const { project: pb } = loadProjectFromRaw(b);
 
     expect(layoutFingerprint(pa!)).not.toBe(layoutFingerprint(pb!));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F1: SPECS.md §4c:228／§4d:270 の逐語条項「式の途中値が負でも最終値が有効なら
+// 許可する」（幾何境界検査は最終解決値のみを判定対象とし、式の中間結果は判定
+// しない）を固定する受理テスト。
+//
+// この条項が固定されていないと、たとえば `evaluateExpr` の各加減算ステップごと
+// に「部分和が負にならないか」を検査するような誤実装（＝式評価と検査を同じ
+// ループに混ぜてしまう実装）に退行しても、既存テストは気づけない。SPECS が
+// わざわざ「途中値ではなく最終解決値を判定対象とする」と明記しているのは
+// まさにこの誤実装を排除するためであり、受入ゲートの逆方向プローブ
+// （「本当にこの逐語条項どおりに実装されているか」）に対して最も脆弱な箇所
+// だった。
+//
+// 数値は自分で導出して確認した:
+//   - "0 - 5 + 10" は文法上「同順位・左から順に評価」（SPECS.md §4d:260）なので
+//     (0 - 5) + 10 = (-5) + 10 = 5。途中値 -5 は負だが最終値 5 は
+//     x ≥ 0 を満たす。
+//   - 対照として "0 - 5" は (0 - 5) = -5。途中値・最終値がともに -5 で、
+//     最終値そのものが負のままなので error になるべき（この条項が「途中値が
+//     負でも許可する」だけであって「最終値が負でも許可する」わけではないこと
+//     の境界を確認する）。
+// ---------------------------------------------------------------------------
+describe("U-PIPE D4: marks の幾何境界検査は最終解決値のみを判定する（SPECS.md §4c:228・§4d:270 逐語）", () => {
+  /** marks[].x に検査対象の式を1つだけ差し込んだ、物理的に整合する最小プロジェクト。 */
+  function markGeometryProject(xExpr: string | number): any {
+    return {
+      meta: { project: "テスト治具", units: "mm", schemaVersion: SUPPORTED_SCHEMA_VERSION },
+      stocks: [
+        { id: "2x4-6f", label: "2x4材", kind: "bar", length: 1820, width: 89, thickness: 38 },
+      ],
+      parts: [
+        { id: "leg", label: "足", stock: "2x4-6f", length: 800 },
+        { id: "beam-top", label: "天板", stock: "2x4-6f", length: 850 },
+      ],
+      assemblies: [
+        {
+          id: "uma-1",
+          label: "ウマ",
+          contains: { leg: 2, "beam-top": 1 },
+          // w/h は ref 導出を介さず直接指定し、x の解決だけに焦点を絞る。
+          marks: [{ on: "beam-top", face: "front", w: 10, h: 10, x: xExpr, y: 0 }],
+        },
+      ],
+    };
+  }
+
+  it("途中値が負でも最終値が有効（0 - 5 + 10 → 5）なら診断ゼロで受理される", () => {
+    const { project, issues } = loadProjectFromRaw(markGeometryProject("0 - 5 + 10"));
+
+    expect(issues).toEqual([]); // error/warning/hint とも0件（診断ゼロ）。
+    expect(project).not.toBeNull();
+    const mark = resolveMarks(project!, project!.assemblies[0])[0];
+    expect(mark.x).toBe(5);
+  });
+
+  it("対照: 最終値が負（0 - 5 → -5）なら error（無条件の許可ではないことの境界確認）", () => {
+    const { project, issues } = loadProjectFromRaw(markGeometryProject("0 - 5"));
+
+    expect(project).toBeNull();
+    expect(
+      issues.some(
+        (i) =>
+          i.severity === "error" &&
+          i.path === "assemblies[0].marks[0].x" &&
+          i.message.includes("0以上"),
+      ),
+    ).toBe(true);
   });
 });

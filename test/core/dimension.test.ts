@@ -338,7 +338,7 @@ describe("extractChainPoints", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 非切削マーク（marks）由来の対象点（SPECS.md §4c:215）
+// 非切削マーク（marks）由来の対象点（SPECS.md §4c:229）
 // ---------------------------------------------------------------------------
 
 function makeMark(overrides: Partial<ResolvedMark> = {}): ResolvedMark {

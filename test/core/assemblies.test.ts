@@ -22,17 +22,25 @@ import { Issue } from "../../src/core/errors";
 import { Project } from "../../src/core/types";
 
 /**
- * SPECS.md §4c に掲載されている例 YAML（parts / assemblies は verbatim）。
+ * SPECS.md §4c（198-218行）に掲載されている例 YAML の再掲。
+ *
+ * `vars` / `parts` / `assemblies` 区画は SPECS.md 198-218行と一字一句 verbatim
+ * （`vars.inset`/`vars.matingAllowance`、uma-1 の `x: $inset`、uma-2 の
+ * `rot: 90, x: "$inset + $matingAllowance", y: top` を含む）。
  *
  * §4c の抜粋は meta / stocks を省略しているため、参照されている 2×4 材
  * （SPF 2×4 6F: length 1820 / width 89 / thickness 38）と meta をここで補う。
- * 補った部分以外は改変していない。
+ * 補った部分（meta ブロック・stocks 区画）以外は改変していない。
  */
 const SPECS_4C_YAML = `\
 meta: { project: ウマ, units: mm, schemaVersion: "0.5" }
 
 stocks:
   - { id: 2x4-6f, preset: spf/2x4/6f, label: "2×4材 6F", kind: bar, length: 1820, width: 89, thickness: 38, price: 598 }
+
+vars:
+  inset: 50
+  matingAllowance: 38  # 相手材との噛み合いのために確保する幅
 
 parts:
   - { id: leg,       label: 足,     stock: 2x4-6f, length: 800 }
@@ -44,12 +52,12 @@ assemblies:
     label: ウマ1号機（足が内側）
     contains: { leg: 2, beam-top: 1, beam-foot: 1 }
     marks:
-      - { on: beam-top, face: front, ref: leg, x: 50, note: 足当たり面 }
+      - { on: beam-top, face: front, ref: leg, x: $inset, note: 足当たり面 }
   - id: uma-2
     label: ウマ2号機（互い違いに噛み合う側）
     contains: { leg: 2, beam-top: 1, beam-foot: 1 }
     marks:
-      - { on: beam-top, face: front, ref: leg, rot: 90, x: 120, y: top, note: 足当たり面 }
+      - { on: beam-top, face: front, ref: leg, rot: 90, x: "$inset + $matingAllowance", y: top, note: 足当たり面 }  # 50 + 38 の導出意図を残し、上端に揃える
 `;
 
 /** bar 材1本＋sheet 材1枚と3形状からなる、物理的に整合する raw プロジェクト。 */
@@ -145,14 +153,37 @@ describe("SPECS.md §4c の例 YAML", () => {
     const variants = collectMarkVariants(project!);
 
     expect(variants.map((v) => v.stem)).toEqual(["uma-1-beam-top", "uma-2-beam-top"]);
+    // uma-1: x: $inset → 50。
     expect(variants[0].marks[0].x).toBe(50);
-    // uma-2 は rot: 90 + y: top（SPECS.md §4c の更新後の例そのもの）。
+    // uma-2 は rot: 90 + x: "$inset + $matingAllowance" + y: top（SPECS.md §4c
+    // 現行の例そのもの）。
     // rot: 90 で (w, h) = (38, 89) → (89, 38) に入れ替わり、
-    // y: top は beam-top の実効幅（bar なので stock.width = 89）から h を引いた
-    // 89 − 38 = 51 に解決される。
-    expect(variants[1].marks[0]).toMatchObject({ x: 120, y: 51, w: 89, h: 38, rot: 90 });
+    // x は $inset(50) + $matingAllowance(38) = 88 に解決される。
+    // y: top は beam-top の実効幅（bar なので stock.width = 89）から
+    // rot 適用後の h(38) を引いた 89 − 38 = 51 に解決される。
+    expect(variants[1].marks[0]).toMatchObject({ x: 88, y: 51, w: 89, h: 38, rot: 90 });
     // マークを持たない形状は変種面にならない（従来どおり形状ごとに1面）。
     expect(variants.every((v) => v.part.id === "beam-top")).toBe(true);
+  });
+
+  it("uma-2 の mark を resolveMarks 経由でフルに検証する（vars + rot + top エイリアスの複合解決）", () => {
+    // SPECS.md §4c の例が「vars と式を含めてそのまま読み込め、かつ仕様書どおりの
+    // 数値に解決される」ことのエンドツーエンド証拠。
+    const { project } = load(parse(SPECS_4C_YAML));
+    const marks = resolveMarks(project!, project!.assemblies[1]);
+
+    expect(marks).toHaveLength(1);
+    expect(marks[0]).toMatchObject({
+      on: "beam-top",
+      face: "front",
+      ref: "leg",
+      rot: 90,
+      w: 89, // rot: 90 で (thickness, width) = (38, 89) → 入れ替わって w = 89
+      h: 38, //                                              h = 38
+      x: 88, // $inset(50) + $matingAllowance(38)
+      y: 51, // top: effectiveWidth(beam-top, 2x4-6f)=89 − h(38) = 51
+      note: "足当たり面",
+    });
   });
 });
 

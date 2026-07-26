@@ -12,7 +12,7 @@
  *   ⑤ metrics（summarize / rankPlans / buildSummary）— 推奨案★の決定
  *   ⑥ plan-X.svg + parts/*.svg（Phase 1: 全てメモリ上に用意）
  *   ⑦ PNG（resvg-js。PNG 有効かつ利用不可なら KidoriError。S-09）
- *   ⑧ schema.json（合成済みスキーマ。SPECS.md §3b:101・§6:247）
+ *   ⑧ schema.json（合成済みスキーマ。SPECS.md §3b:101・§6:302）
  *   ⑨ summary.json（generatedAt は build 時刻の ISO 文字列。正本ハッシュ付き）
  *   ⑩ Phase 2: tmp+rename でアトミックにコミット。summary.json を最後に書く
  *   ⑪ 管理対象パターン（plan-*.svg/png, parts/*.svg/png, schema.json,
@@ -78,7 +78,7 @@ const FAILURE_MARKER = "BUILD-FAILED.txt";
 const SUMMARY_FILENAME = "summary.json";
 
 /**
- * 合成済みスキーマの書き出し先ファイル名（SPECS.md §3b:101・§6:247）。
+ * 合成済みスキーマの書き出し先ファイル名（SPECS.md §3b:101・§6:302）。
  *
  * 正本ディレクトリではなく `<ファイル名>.out/` の直下に置く派生物であり、
  * ビルドのたびに再生成される。`kidori schema <ファイル>` の stdout と同一内容。
@@ -435,7 +435,7 @@ export interface PartFace {
 }
 
 /**
- * 出力する加工指示図の面一覧を決める（SPECS.md §4c:217）。
+ * 出力する加工指示図の面一覧を決める（SPECS.md §4c:231）。
  *
  * 規則:
  *   - **変種面**: マークを持つ (assembly, 形状) 組ごとに1面
@@ -444,7 +444,7 @@ export interface PartFace {
  *     編集で出力ファイル名の集合が変わる不安定な出力になる。
  *   - **基底面**: その形状の unit のうち、マーク付き assembly に属さないものが
  *     1つでも存在する場合に出力する（`parts/<形状id>.svg`）。
- *     SPECS.md:217「マークを持たない形状は従来どおり形状ごとに1面」を、
+ *     SPECS.md §4c:231「マークを持たない形状は従来どおり形状ごとに1面」を、
  *     マークが一部の構成にしか付かない場合へ単調に拡張したもの。この条件が
  *     無いと、マーク無し assembly に属する unit が図面を持たない穴が生じる。
  *     全 unit がマーク付き assembly に属するなら基底面は出さない。
@@ -813,7 +813,7 @@ function buildInner(
   }
 
   // 面の集合は marks の有無で変わるが、割付（plans / summaries）はここより前で
-  // 確定済みであり、marks は一切参照されていない（SPECS.md §4c:216）。
+  // 確定済みであり、marks は一切参照されていない（SPECS.md §4c:230）。
   const stocksById = new Map(project.stocks.map((s) => [s.id, s]));
   const partCards: { id: string; label: string; svgPath: string }[] = [];
   for (const face of planPartFaces(project)) {
