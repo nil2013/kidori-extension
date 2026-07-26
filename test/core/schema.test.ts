@@ -186,6 +186,26 @@ describe("スキーマの構造", () => {
     }
   });
 
+  it("v0.7d: marks の x/y は center を含む3値のエイリアス enum を持つ（演算子・$参照は不可）", () => {
+    const schema = buildSchema([]) as any;
+    const branches = schema.properties.assemblies.items.properties.marks.items.oneOf as any[];
+
+    for (const branch of branches) {
+      // oneOf[0] は number、oneOf[1] が端揃え・中央揃えエイリアスの enum。
+      const xAlias = branch.properties.x.oneOf[1];
+      const yAlias = branch.properties.y.oneOf[1];
+      expect(xAlias.enum).toEqual(["left", "right", "center"]);
+      expect(yAlias.enum).toEqual(["bottom", "top", "center"]);
+      // ミニ式・$vars 参照はスコープ外: enum に演算子入り文字列や $ 参照が
+      // 混入していないことを明示的に確認する（部分実装された構文の混入防止）。
+      for (const alias of [xAlias, yAlias]) {
+        for (const v of alias.enum as string[]) {
+          expect(v).not.toMatch(/[-+$]/);
+        }
+      }
+    }
+  });
+
   it("v0.7: parts[].qty は必須ではない（assemblies から導出できるため）", () => {
     const schema = buildSchema([]) as any;
 
@@ -267,6 +287,54 @@ describe("スキーマ検証", () => {
     data.unknownKey = "x";
 
     expect(validate(data)).not.toEqual([]);
+  });
+
+  it("v0.7d: トップレベル vars 区画は fail する（SPECS §4d はスコープ外）", () => {
+    const data = minimalProject();
+    data.vars = { inset: 50 };
+
+    expect(validate(data)).not.toEqual([]);
+  });
+
+  it("v0.7d: marks.x/y は center 以外の未知エイリアス文字列を fail する", () => {
+    const data = minimalProject();
+    data.assemblies = [
+      {
+        id: "asm",
+        contains: { "shelf-0": 1 },
+        marks: [{ on: "shelf-0", face: "front", w: 10, h: 10, x: "center", y: "center" }],
+      },
+    ];
+    // center 自体は pass する（今回追加したエイリアス）。
+    expect(validate(data)).toEqual([]);
+  });
+
+  it("v0.7d: marks.x に演算子入り文字列（ミニ式）を指定すると fail する（SPECS §4d はスコープ外）", () => {
+    const data = minimalProject();
+    data.assemblies = [
+      {
+        id: "asm",
+        contains: { "shelf-0": 1 },
+        marks: [{ on: "shelf-0", face: "front", w: 10, h: 10, x: "right - 40", y: 0 }],
+      },
+    ];
+
+    const issues = validate(data);
+    expect(issues.length).toBeGreaterThan(0);
+  });
+
+  it("v0.7d: marks.x に $ 変数参照を指定すると fail する（SPECS §4d の vars 参照はスコープ外）", () => {
+    const data = minimalProject();
+    data.assemblies = [
+      {
+        id: "asm",
+        contains: { "shelf-0": 1 },
+        marks: [{ on: "shelf-0", face: "front", w: 10, h: 10, x: "$inset", y: 0 }],
+      },
+    ];
+
+    const issues = validate(data);
+    expect(issues.length).toBeGreaterThan(0);
   });
 
   it("未知の part キーは fail する", () => {
@@ -562,6 +630,18 @@ describe("DESCRIPTIONS", () => {
     expect(descY).toContain("bottom");
     expect(descY).toContain("top");
     expect(descY).toContain("rot 適用後");
+  });
+
+  it("marks.x/y は center の解決規則（矩形領域では (軸長 − w/h) / 2、軸長の 1/2 ではない）を明記する（v0.7d）", () => {
+    for (const key of ["marks.x", "marks.y"]) {
+      const desc = DESCRIPTIONS[key];
+      expect(desc, key).toContain("center");
+      // SPECS.md §4d は点位置での center を「軸長の1/2」と規定しているため、
+      // marks（矩形領域）の解決規則がそれと異なることを限定して明記する。
+      expect(desc, key).toContain("矩形領域");
+      expect(desc, key).toContain("/ 2");
+      expect(desc, key).toContain("軸長の 1/2 ではない");
+    }
   });
 
   it("v0.7 追加フィールドの説明がある", () => {

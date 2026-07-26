@@ -272,6 +272,111 @@ describe("v0.7: marks の rot と端揃えエイリアス", () => {
 });
 
 // ---------------------------------------------------------------------------
+// center 揃えエイリアス（SPECS.md §4d のうち、今回スコープに含める部分のみ）
+//
+// §4d 逐語: 「矩形領域（marks の x/y 等）では領域全体を揃えるため、right/top は
+// 『対象面の軸長 − w/h』、center は『（対象面の軸長 − w/h）÷2』に解決する。
+// w/h は ref・rot による導出値でもよい。」
+// ---------------------------------------------------------------------------
+
+describe("v0.7d: marks の center 揃えエイリアス（矩形領域）", () => {
+  it("x: center / y: center は (軸長 − w) / 2 / (軸長 − h) / 2 に解決される（rot: 90）", () => {
+    // beam-top: length 850、実効幅 89（bar なので stock.width）。
+    // ref: leg（2×4、厚み38×幅89）+ rot: 90 → (w, h) = (89, 38) に入れ替わる。
+    // x: center → (850 − 89) / 2 = 380.5
+    // y: center → (89 − 38) / 2 = 25.5
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", ref: "leg", rot: 90, x: "center", y: "center" }],
+      },
+    ];
+    const { project, issues } = load(raw);
+
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+    const mark = resolveMarks(project!, project!.assemblies[0])[0];
+    expect(mark.w).toBe(89);
+    expect(mark.h).toBe(38);
+    expect(mark.x).toBe(380.5);
+    expect(mark.y).toBe(25.5);
+  });
+
+  it("center は「軸長の 1/2」ではなく「(軸長 − size) / 2」である（size 0 の退化例で確認）", () => {
+    // w = h = 0 の退化例なら center は軸長そのものの 1/2 と数値上一致してしまうため、
+    // ここでは w/h が非0の上のテストで既に「軸長の1/2ではない」ことを数値的に示している
+    // （380.5 ≠ 850/2 = 425、25.5 ≠ 89/2 = 44.5）。念のため明記する。
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", ref: "leg", rot: 90, x: "center", y: "center" }],
+      },
+    ];
+    const { project } = load(raw);
+    const mark = resolveMarks(project!, project!.assemblies[0])[0];
+
+    expect(mark.x).not.toBe(850 / 2);
+    expect(mark.y).not.toBe(89 / 2);
+  });
+
+  it("rot を 0/90 で振ると center の解決値が変わる（rot 適用後の w/h を使っている証拠）", () => {
+    // rot: 0 なら (w, h) = (38, 89)。
+    //   x: center → (850 − 38) / 2 = 406
+    //   y: center → (89 − 89) / 2 = 0
+    // rot: 90 なら (w, h) = (89, 38)。
+    //   x: center → (850 − 89) / 2 = 380.5
+    //   y: center → (89 − 38) / 2 = 25.5
+    for (const [rot, expectedX, expectedY] of [
+      [0, 406, 0],
+      [90, 380.5, 25.5],
+    ] as const) {
+      const raw = baseRaw();
+      raw.assemblies = [
+        {
+          id: "asm",
+          contains: { leg: 1, "beam-top": 1 },
+          marks: [{ on: "beam-top", face: "front", ref: "leg", rot, x: "center", y: "center" }],
+        },
+      ];
+      const { project, issues } = load(raw);
+
+      expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+      const mark = resolveMarks(project!, project!.assemblies[0])[0];
+      expect(mark.x).toBe(expectedX);
+      expect(mark.y).toBe(expectedY);
+    }
+  });
+
+  it("既存の left/right/bottom/top の解決値は center 追加後も変わらない（回帰防止）", () => {
+    // 既存テスト「4方向の端揃えエイリアス」と同じ数値例を、center と同居させて再確認する。
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [
+          { on: "beam-top", face: "front", ref: "leg", x: "left", y: "bottom" },
+          { on: "beam-top", face: "front", ref: "leg", x: "right", y: "top" },
+          { on: "beam-top", face: "front", ref: "leg", x: "center", y: "center" },
+        ],
+      },
+    ];
+    const { project, issues } = load(raw);
+
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+    const marks = resolveMarks(project!, project!.assemblies[0]);
+
+    expect(marks[0]).toMatchObject({ x: 0, y: 0 }); // left → 0, bottom → 0
+    expect(marks[1]).toMatchObject({ x: 812, y: 0 }); // right → 850−38=812, top → 89−89=0
+    // center → (850−38)/2=406, (89−89)/2=0（rot 省略なので (w,h)=(38,89)）
+    expect(marks[2]).toMatchObject({ x: 406, y: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // qty 導出（SPECS.md §4c）
 // ---------------------------------------------------------------------------
 

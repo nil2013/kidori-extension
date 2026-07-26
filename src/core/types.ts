@@ -163,15 +163,19 @@ export interface Mark {
   /**
    * 領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。
    * 数値の代わりに端揃えエイリアス `"left"`（0）/`"right"`（`part.length - w`。
-   * `w` は `rot` 適用後）を指定できる（`resolveMark` が解決する）。
+   * `w` は `rot` 適用後）/`"center"`（`(part.length - w) / 2`。矩形領域を中央に
+   * 揃えるための解決規則であり「軸長の 1/2」ではない）を指定できる
+   * （`resolveMark` が解決する）。
    */
-  x: number | "left" | "right";
+  x: number | "left" | "right" | "center";
   /**
    * 領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。
    * 数値の代わりに端揃えエイリアス `"bottom"`（0）/`"top"`（`effectiveWidth - h`。
-   * `h` は `rot` 適用後）を指定できる（`resolveMark` が解決する）。
+   * `h` は `rot` 適用後）/`"center"`（`(effectiveWidth - h) / 2`。矩形領域を中央に
+   * 揃えるための解決規則であり「軸長の 1/2」ではない）を指定できる
+   * （`resolveMark` が解決する）。
    */
-  y: number | "bottom" | "top";
+  y: number | "bottom" | "top" | "center";
   /** 領域の幅（mm、X 方向）。`ref` 指定時は null。 */
   w: number | null;
   /** 領域の高さ（mm、Y 方向）。`ref` 指定時は null。 */

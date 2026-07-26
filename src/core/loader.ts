@@ -461,19 +461,20 @@ function buildStock(s: Record<string, any>): Stock {
 }
 
 /**
- * marks[].x / marks[].y の素の値を Mark のフィールド型（`number | エイリアス2種`）に
+ * marks[].x / marks[].y の素の値を Mark のフィールド型（`number | エイリアス3種`）に
  * 変換する。省略時は 0（領域の左下角＝部材ローカル原点側の角が基準。SPECS.md §4c）。
- * エイリアス自体の解決（0 や `面寸法 - w/h` への変換）は `resolveMark`（marks.ts）が
- * `rot` 適用後に行う（層1 のスキーマ検証を通過済みの前提のため、near/far 以外の
- * 文字列は来ない）。
+ * エイリアス自体の解決（0 や `面寸法 - w/h`、`(面寸法 - w/h) / 2` への変換）は
+ * `resolveMark`（marks.ts）が `rot` 適用後に行う（層1 のスキーマ検証を通過済みの
+ * 前提のため、near/far/center 以外の文字列は来ない）。
  */
-function buildMarkCoord<Near extends string, Far extends string>(
+function buildMarkCoord<Near extends string, Far extends string, Center extends string>(
   v: unknown,
   near: Near,
   far: Far,
-): number | Near | Far {
-  if (v === near || v === far) {
-    return v as Near | Far;
+  center: Center,
+): number | Near | Far | Center {
+  if (v === near || v === far || v === center) {
+    return v as Near | Far | Center;
   }
   if (v === null || v === undefined) {
     return 0;
@@ -486,8 +487,8 @@ function buildMark(m: Record<string, any>): Mark {
   return {
     on: m.on,
     face: m.face,
-    x: buildMarkCoord(m.x, "left", "right"),
-    y: buildMarkCoord(m.y, "bottom", "top"),
+    x: buildMarkCoord(m.x, "left", "right", "center"),
+    y: buildMarkCoord(m.y, "bottom", "top", "center"),
     w: m.w !== null && m.w !== undefined ? Number(m.w) : null,
     h: m.h !== null && m.h !== undefined ? Number(m.h) : null,
     ref: typeof m.ref === "string" ? m.ref : null,

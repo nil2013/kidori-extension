@@ -128,14 +128,18 @@ export const DESCRIPTIONS: Record<string, string> = {
   "marks.x":
     "マーク領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。" +
     '数値の代わりに端揃えエイリアス "left"（0）/ "right"（part.length − w。w は' +
-    "rot 適用後の値）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス" +
-    "解決（このエイリアスが参照する w は rot 適用後の値）。" +
+    'rot 適用後の値）/ "center"（矩形領域では (part.length − w) / 2。w は rot 適用後' +
+    "の値。領域全体を中央に揃えるための解決規則であり、軸長の 1/2 ではないことに" +
+    "注意）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決" +
+    "（このエイリアスが参照する w は rot 適用後の値）。" +
     "hole の x（中心基準）とは基準が異なるので注意すること。",
   "marks.y":
     "マーク領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。" +
     '数値の代わりに端揃えエイリアス "bottom"（0）/ "top"（実効幅 − h。h は' +
-    "rot 適用後の値）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス" +
-    "解決（このエイリアスが参照する h は rot 適用後の値）。" +
+    'rot 適用後の値）/ "center"（矩形領域では (実効幅 − h) / 2。h は rot 適用後の値。' +
+    "領域全体を中央に揃えるための解決規則であり、軸長の 1/2 ではないことに注意）も" +
+    "指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決" +
+    "（このエイリアスが参照する h は rot 適用後の値）。" +
     "hole の y（中心基準）とは基準が異なるので注意すること。",
   "marks.w":
     "マーク領域の幅（mm、X 方向）。h とセットで指定する。ref とは排他" +
@@ -224,12 +228,12 @@ function markSchema(): Record<string, unknown> {
     x: {
       default: 0,
       description: DESCRIPTIONS["marks.x"],
-      oneOf: [{ type: "number", minimum: 0 }, { enum: ["left", "right"] }],
+      oneOf: [{ type: "number", minimum: 0 }, { enum: ["left", "right", "center"] }],
     },
     y: {
       default: 0,
       description: DESCRIPTIONS["marks.y"],
-      oneOf: [{ type: "number", minimum: 0 }, { enum: ["bottom", "top"] }],
+      oneOf: [{ type: "number", minimum: 0 }, { enum: ["bottom", "top", "center"] }],
     },
     rot: {
       enum: [0, 90],

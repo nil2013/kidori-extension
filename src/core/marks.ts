@@ -21,10 +21,12 @@
  *      これは「当たり面の面内回転」というマーク自身の性質として定義されているため、
  *      寸法の指定方法によって同じ `rot: 90` が別の意味になる実装は避ける
  *      設計判断。SPECS.md 自体は ref 導出への言及に留まる）。
- *   3. `x`/`y` の端揃えエイリアス（`left`/`right`/`bottom`/`top`）を、2. で確定した
- *      w/h を使って解決する。基準面寸法は X 軸 = `part.length`、Y 軸 =
- *      `effectiveWidth(part, stock)`（`extractChainPoints`・`checkGroove` と同じ
- *      軸割当。新しい規約は作らない）。
+ *   3. `x`/`y` の端揃えエイリアス（`left`/`right`/`bottom`/`top`/`center`）を、
+ *      2. で確定した w/h を使って解決する。基準面寸法は X 軸 = `part.length`、
+ *      Y 軸 = `effectiveWidth(part, stock)`（`extractChainPoints`・`checkGroove`
+ *      と同じ軸割当。新しい規約は作らない）。`center` は矩形領域（marks の
+ *      領域全体）を中央に揃えるための解決規則であり `(axisSpan - size) / 2` に
+ *      解決する（軸長の 1/2 ではない）。
  */
 
 import type { Assembly, Mark, Part, Project, ResolvedMark, Stock } from "./types";
@@ -107,11 +109,17 @@ function onSection(project: Project, onId: string): { part: Part; stock: Stock }
 }
 
 /**
- * 端揃えエイリアス（`near`/`far`）または数値の座標を数値に解決する。
+ * 端揃えエイリアス（`near`/`far`/`center`）または数値の座標を数値に解決する。
+ *
+ * `center` は矩形領域（marks の領域全体）を中央に揃えるための解決規則であり
+ * `(axisSpan - size) / 2` に解決する（軸長の 1/2 ではない）。SPECS.md §4d は
+ * 点位置（矩形でない座標）での `center` を「軸長の 1/2」と規定しているが、
+ * marks の x/y は領域寸法 size を持つ矩形領域なので解決規則が異なる。
  *
  * @param value 素の座標値（数値またはエイリアス文字列）。
  * @param near `"left"`/`"bottom"` に対応する文字列（解決値は常に 0）。
  * @param far `"right"`/`"top"` に対応する文字列（解決値は `axisSpan - size`）。
+ * @param center `"center"` に対応する文字列（解決値は `(axisSpan - size) / 2`）。
  * @param axisSpan 軸方向の面寸法（X 軸なら `part.length`、Y 軸なら `effectiveWidth`）。
  * @param size マーク領域の当該軸方向の寸法（**rot 適用後**の w または h）。
  */
@@ -119,6 +127,7 @@ function resolveAliasCoord(
   value: number | string,
   near: string,
   far: string,
+  center: string,
   axisSpan: number,
   size: number,
 ): number {
@@ -127,6 +136,9 @@ function resolveAliasCoord(
   }
   if (value === far) {
     return axisSpan - size;
+  }
+  if (value === center) {
+    return (axisSpan - size) / 2;
   }
   return value as number;
 }
@@ -166,8 +178,8 @@ export function resolveMark(project: Project, mark: Mark): ResolvedMark {
   // D3: エイリアス解決の基準面寸法は extractChainPoints/checkGroove と同じ軸割当
   // （X = part.length、Y = effectiveWidth）。size は rot 適用後の w/h を使う。
   const { part, stock } = onSection(project, mark.on);
-  const x = resolveAliasCoord(mark.x, "left", "right", part.length, w);
-  const y = resolveAliasCoord(mark.y, "bottom", "top", effectiveWidth(part, stock), h);
+  const x = resolveAliasCoord(mark.x, "left", "right", "center", part.length, w);
+  const y = resolveAliasCoord(mark.y, "bottom", "top", "center", effectiveWidth(part, stock), h);
 
   return {
     on: mark.on,
