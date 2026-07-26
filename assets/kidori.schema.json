@@ -239,7 +239,7 @@
                         "front",
                         "back"
                       ],
-                      "description": "加工面。front は実線＋薄塗り、back は破線（隠れ線規約）で描画される。"
+                      "description": "加工面。front は木表・木裏を区別しない幅広の加工基準面（length × width。完成品の世界座標における正面や、樹皮側を意味する木表そのものではない）。面内座標系は左下原点・X右・Y上で、X は length 方向、Y は width 方向。front は実線＋薄塗り、back はその対向面を front の加工指示図カード上に破線（隠れ線規約）で投影して描画する。"
                     },
                     "dir": {
                       "enum": [
@@ -273,12 +273,12 @@
                     "from": {
                       "type": "number",
                       "minimum": 0,
-                      "description": "end: stopped の場合のみ使用する、走行方向の開始座標（mm）。"
+                      "description": "end: stopped の場合のみ使用する、走行軸上の絶対座標（mm）の開始側。across では下端からの Y 座標、along では左端からの X 座標とし、0 ≤ from < to ≤ 走行軸の面寸法（across は実効幅、along は部材長）を満たす。end: through への from/to 併記はエラー。"
                     },
                     "to": {
                       "type": "number",
                       "minimum": 0,
-                      "description": "end: stopped の場合のみ使用する、走行方向の終了座標（mm）。"
+                      "description": "end: stopped の場合のみ使用する、走行軸上の絶対座標（mm）の終了側。across では下端からの Y 座標、along では左端からの X 座標とし、0 ≤ from < to ≤ 走行軸の面寸法（across は実効幅、along は部材長）を満たす。end: through への from/to 併記はエラー。"
                     }
                   }
                 },
@@ -388,7 +388,7 @@
                         "front",
                         "back"
                       ],
-                      "description": "加工面。front または back。"
+                      "description": "加工面。front は木表・木裏を区別しない幅広の加工基準面（length × width。完成品の世界座標における正面や、樹皮側を意味する木表そのものではない）。面内座標系は左下原点・X右・Y上で、X は length 方向、Y は width 方向。front は実線、back はその対向面を front の加工指示図カード上に破線（隠れ線規約）で投影して描画する。"
                     },
                     "x": {
                       "default": 0,
@@ -438,7 +438,7 @@
                     },
                     "ref": {
                       "type": "string",
-                      "description": "相手形状（parts[].id）の断面寸法から領域寸法を導出する。w = 相手形状が使う原材のthickness、h = 相手形状の実効幅（bar なら原材幅、sheet なら part.width）（例: ref: leg → 2×4 の 38×89）。参照先の寸法変更に自動追従する。w/h とは排他（併記は error）。相手部材を 90° 倒して当てる場合は rot: 90 を指定する（w/h の直接指定に頼らなくてよい。rot は当たり面の面内回転としてw/h 直接指定にも一様に適用されるため、面ごとに導出値を変える特別扱いは不要）。"
+                      "description": "相手形状（parts[].id）の木口寸法（width × thickness）から領域寸法を導出する。w = 相手形状が使う原材の thickness、h = 相手形状の実効幅（bar なら原材幅、sheet なら part.width）（例: ref: leg → 2×4 の木口 38×89（w×h））。参照先の寸法変更に自動追従する。w/h とは排他（併記は error）。相手部材を 90° 倒して当てる場合は rot: 90 を指定する（w/h の直接指定に頼らなくてよい。rot は当たり面の面内回転としてw/h 直接指定にも一様に適用されるため、面ごとに導出値を変える特別扱いは不要）。"
                     }
                   }
                 },
@@ -459,7 +459,7 @@
                         "front",
                         "back"
                       ],
-                      "description": "加工面。front または back。"
+                      "description": "加工面。front は木表・木裏を区別しない幅広の加工基準面（length × width。完成品の世界座標における正面や、樹皮側を意味する木表そのものではない）。面内座標系は左下原点・X右・Y上で、X は length 方向、Y は width 方向。front は実線、back はその対向面を front の加工指示図カード上に破線（隠れ線規約）で投影して描画する。"
                     },
                     "x": {
                       "default": 0,

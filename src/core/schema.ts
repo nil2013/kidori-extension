@@ -92,7 +92,12 @@ export const DESCRIPTIONS: Record<string, string> = {
     "bar 部材では意味を持たない（指定すると loader が warning を出す）。",
   "parts.features": "加工フィーチャ（溝・丸穴）の配列。",
   "features.type": "フィーチャ種別。groove（溝）または hole（丸穴）。",
-  "groove.face": "加工面。front は実線＋薄塗り、back は破線（隠れ線規約）で描画される。",
+  "groove.face":
+    "加工面。front は木表・木裏を区別しない幅広の加工基準面（length × width。" +
+    "完成品の世界座標における正面や、樹皮側を意味する木表そのものではない）。" +
+    "面内座標系は左下原点・X右・Y上で、X は length 方向、Y は width 方向。" +
+    "front は実線＋薄塗り、back はその対向面を front の加工指示図カード上に" +
+    "破線（隠れ線規約）で投影して描画する。",
   "groove.dir": "溝の走行方向。across（幅方向）または along（長さ方向）。",
   "groove.pos":
     "基準端（部材ローカル原点側の端）から溝中心までの距離（mm）。" +
@@ -100,8 +105,16 @@ export const DESCRIPTIONS: Record<string, string> = {
   "groove.width": "溝幅（mm）。",
   "groove.depth": "溝深さ（mm）。stock.thickness 以下でなければならない（意味検証層）。",
   "groove.end": "through（通し）または stopped（止め、止めの場合 from/to を追加）。",
-  "groove.from": "end: stopped の場合のみ使用する、走行方向の開始座標（mm）。",
-  "groove.to": "end: stopped の場合のみ使用する、走行方向の終了座標（mm）。",
+  "groove.from":
+    "end: stopped の場合のみ使用する、走行軸上の絶対座標（mm）の開始側。" +
+    "across では下端からの Y 座標、along では左端からの X 座標とし、" +
+    "0 ≤ from < to ≤ 走行軸の面寸法（across は実効幅、along は部材長）を満たす。" +
+    "end: through への from/to 併記はエラー。",
+  "groove.to":
+    "end: stopped の場合のみ使用する、走行軸上の絶対座標（mm）の終了側。" +
+    "across では下端からの Y 座標、along では左端からの X 座標とし、" +
+    "0 ≤ from < to ≤ 走行軸の面寸法（across は実効幅、along は部材長）を満たす。" +
+    "end: through への from/to 併記はエラー。",
   "hole.face": "加工面。front または back。",
   "hole.x": "部材ローカル座標系での中心 X 座標（mm）。",
   "hole.y": "部材ローカル座標系での中心 Y 座標（mm）。",
@@ -124,7 +137,12 @@ export const DESCRIPTIONS: Record<string, string> = {
     "（材を消費せず、kerf・歩留まり計算にも入らない）。",
   "marks.on":
     "マークを付ける対象形状（parts[].id）。その構成の contains に含まれる形状でなければならない。",
-  "marks.face": "加工面。front または back。",
+  "marks.face":
+    "加工面。front は木表・木裏を区別しない幅広の加工基準面（length × width。" +
+    "完成品の世界座標における正面や、樹皮側を意味する木表そのものではない）。" +
+    "面内座標系は左下原点・X右・Y上で、X は length 方向、Y は width 方向。" +
+    "front は実線、back はその対向面を front の加工指示図カード上に破線" +
+    "（隠れ線規約）で投影して描画する。",
   "marks.x":
     "マーク領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。" +
     '数値の代わりに端揃えエイリアス "left"（0）/ "right"（part.length − w。w は' +
@@ -150,9 +168,10 @@ export const DESCRIPTIONS: Record<string, string> = {
     "（併記も、ref・w/h ともに無いのも error）。rot: 90 を指定すると w と入れ替わる" +
     "（rot は w/h 直接指定にも一様に適用される）。",
   "marks.ref":
-    "相手形状（parts[].id）の断面寸法から領域寸法を導出する。w = 相手形状が使う原材の" +
-    "thickness、h = 相手形状の実効幅（bar なら原材幅、sheet なら part.width）" +
-    "（例: ref: leg → 2×4 の 38×89）。参照先の寸法変更に自動追従する。" +
+    "相手形状（parts[].id）の木口寸法（width × thickness）から領域寸法を導出する。" +
+    "w = 相手形状が使う原材の thickness、h = 相手形状の実効幅（bar なら原材幅、" +
+    "sheet なら part.width）（例: ref: leg → 2×4 の木口 38×89（w×h））。" +
+    "参照先の寸法変更に自動追従する。" +
     "w/h とは排他（併記は error）。相手部材を 90° 倒して当てる場合は rot: 90 を" +
     "指定する（w/h の直接指定に頼らなくてよい。rot は当たり面の面内回転として" +
     "w/h 直接指定にも一様に適用されるため、面ごとに導出値を変える特別扱いは不要）。",

@@ -112,9 +112,11 @@ function onSection(project: Project, onId: string): { part: Part; stock: Stock }
  * 端揃えエイリアス（`near`/`far`/`center`）または数値の座標を数値に解決する。
  *
  * `center` は矩形領域（marks の領域全体）を中央に揃えるための解決規則であり
- * `(axisSpan - size) / 2` に解決する（軸長の 1/2 ではない）。SPECS.md §4d は
- * 点位置（矩形でない座標）での `center` を「軸長の 1/2」と規定しているが、
- * marks の x/y は領域寸法 size を持つ矩形領域なので解決規則が異なる。
+ * `(axisSpan - size) / 2` に解決する（軸長の 1/2 ではない）。SPECS.md §4d の
+ * 位置式（揃えエイリアス）は marks の x/y にのみ限定され、`hole.x`/`hole.y`・
+ * `groove.pos` では揃えエイリアス自体が許可されない。marks の x/y は領域寸法
+ * size を持つ矩形領域であるため、`center` は軸長の単純な 1/2 ではなくこの
+ * 解決規則になる。
  *
  * @param value 素の座標値（数値またはエイリアス文字列）。
  * @param near `"left"`/`"bottom"` に対応する文字列（解決値は常に 0）。

@@ -636,8 +636,9 @@ describe("DESCRIPTIONS", () => {
     for (const key of ["marks.x", "marks.y"]) {
       const desc = DESCRIPTIONS[key];
       expect(desc, key).toContain("center");
-      // SPECS.md §4d は点位置での center を「軸長の1/2」と規定しているため、
-      // marks（矩形領域）の解決規則がそれと異なることを限定して明記する。
+      // SPECS.md §4d の揃えエイリアスは marks の x/y に限定される
+      // （hole.x/y・groove.pos では許可されない）。marks（矩形領域）の
+      // center 解決規則が軸長の単純な 1/2 ではないことを明記する。
       expect(desc, key).toContain("矩形領域");
       expect(desc, key).toContain("/ 2");
       expect(desc, key).toContain("軸長の 1/2 ではない");
@@ -650,5 +651,46 @@ describe("DESCRIPTIONS", () => {
     expect(DESCRIPTIONS["assemblies.marks"]).toContain("加工指示図");
     expect(DESCRIPTIONS["marks.on"]).toContain("contains");
     expect(DESCRIPTIONS["parts.qty"]).toContain("contains");
+  });
+
+  it("groove.from/to は止め溝の座標規約（走行軸上の絶対座標、across=Y／along=X）を明記する（U-DOCSYNC）", () => {
+    for (const key of ["groove.from", "groove.to"]) {
+      const desc = DESCRIPTIONS[key];
+      expect(desc, key).toContain("走行軸上の絶対座標");
+      expect(desc, key).toContain("下端からの Y 座標");
+      expect(desc, key).toContain("左端からの X 座標");
+      expect(desc, key).toContain("0 ≤ from < to");
+      expect(desc, key).toContain("走行軸の面寸法");
+      // through への from/to 併記がエラーであることも落とさない。
+      expect(desc, key).toContain("through");
+      expect(desc, key).toContain("エラー");
+    }
+  });
+
+  it("groove.face/marks.face は SPECS §4a の front 定義（幅広の加工基準面。木表そのものではない）を明記する（U-DOCSYNC）", () => {
+    for (const key of ["groove.face", "marks.face"]) {
+      const desc = DESCRIPTIONS[key];
+      expect(desc, key).toContain("幅広の加工基準面");
+      expect(desc, key).toContain("length × width");
+      expect(desc, key).toContain("木表そのものではない");
+      expect(desc, key).toContain("左下原点");
+      // back のサポート削除・非推奨を示唆する記述を書かないこと（Supervisor 裁定済み）。
+      expect(desc, key).not.toMatch(/非推奨|廃止|サポートしない|対象外/);
+    }
+    // groove.face は既存の描画規約（front=実線、back=隠れ線の破線）を落としていない。
+    expect(DESCRIPTIONS["groove.face"]).toContain("隠れ線規約");
+    expect(DESCRIPTIONS["marks.face"]).toContain("隠れ線規約");
+  });
+
+  it("marks.ref は「木口寸法」に追随し、w/h の実際の割り当ては変えていない（U-DOCSYNC）", () => {
+    const desc = DESCRIPTIONS["marks.ref"];
+    expect(desc).toContain("木口寸法");
+    expect(desc).toContain("width × thickness");
+    // 旧用語「断面寸法」への言及は残さない。
+    expect(desc).not.toContain("断面寸法");
+    // w/h の割り当て（rot: 0 は thickness/width）自体は変更しない。
+    expect(desc).toContain("thickness");
+    expect(desc).toContain("実効幅");
+    expect(desc).toContain("38×89");
   });
 });
