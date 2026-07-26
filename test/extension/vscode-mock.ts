@@ -286,18 +286,46 @@ export const extensions = {
   },
 };
 
+/**
+ * `languages.createDiagnosticCollection(...).set(...)` の内容をテストから検証
+ * できるようにする（U-EXT。編集時再評価の debounce・パース不能時の前回診断
+ * 維持を検証するには、診断コレクションの中身を外から覗く手段が要る）。
+ * `__getChannelLines` と同じ「モジュール単位のシンク」パターン。
+ *
+ * コレクション名ごとに独立したストアを持つ（extension.ts の "kidori" と
+ * presets.ts の StockShadowReporter が持つ "kidori-stocks" は別物であり、
+ * 同一 URI に対して独立に set/delete する。名前を無視して単一マップに
+ * 共有すると、shadow 側の「シャドウ無し」判定（`delete(uri)`）が
+ * "kidori" 側の診断を巻き添えで消してしまう）。
+ */
+const diagnosticsStore = new Map<string, Map<string, unknown[]>>();
+export function __getDiagnostics(
+  uriString: string,
+  collectionName = "kidori",
+): readonly unknown[] {
+  return diagnosticsStore.get(collectionName)?.get(uriString) ?? [];
+}
+export function __resetDiagnosticsStore(): void {
+  diagnosticsStore.clear();
+}
+
 export const languages = {
-  createDiagnosticCollection(_name?: string) {
-    const store = new Map<string, unknown[]>();
+  createDiagnosticCollection(name = "kidori") {
+    let store = diagnosticsStore.get(name);
+    if (!store) {
+      store = new Map<string, unknown[]>();
+      diagnosticsStore.set(name, store);
+    }
+    const collection = store;
     return {
       set(uri: { toString(): string }, diags: unknown[]) {
-        store.set(uri.toString(), diags);
+        collection.set(uri.toString(), diags);
       },
       delete(uri: { toString(): string }) {
-        store.delete(uri.toString());
+        collection.delete(uri.toString());
       },
       clear() {
-        store.clear();
+        collection.clear();
       },
       dispose() {},
     };
@@ -309,6 +337,11 @@ export const languages = {
   ): { dispose(): void } {
     // completion.ts の provideCompletionItems は本テストの対象経路から
     // 呼び出されないため、登録を受理するだけの no-op。
+    return { dispose() {} };
+  },
+  registerHoverProvider(_selector: unknown, _provider: unknown): { dispose(): void } {
+    // hover.ts の provideHover も同様に本テストの対象経路からは呼び出されない
+    // （U-EXT）。registerCompletionItemProvider と同じ理由の no-op。
     return { dispose() {} };
   },
 };
@@ -409,6 +442,23 @@ export function __resetSaveListeners(): void {
   saveListeners.length = 0;
 }
 
+// --- onDidChangeTextDocument。__fireDidSave と同じ理由で、拡張ホストが
+// 編集イベントを検知してリスナーを呼ぶ動作を模擬する（U-EXT: 編集時再評価の
+// debounce・パース不能時の前回診断維持を検証するのに使う）。activate() は
+// 本イベントに2本のリスナー（スキーマ用 300ms debounce・診断用 500ms
+// debounce）を登録するため、`__fireDidChangeTextDocument` は登録済みの
+// **全リスナー**を順に呼ぶ（save/close と異なり複数登録を前提にする）。
+type ChangeEvent = { document: TextDocumentLike & { getText(): string } };
+const changeListeners: ((e: ChangeEvent) => void)[] = [];
+export function __fireDidChangeTextDocument(e: ChangeEvent): void {
+  for (const listener of [...changeListeners]) {
+    listener(e);
+  }
+}
+export function __resetChangeListeners(): void {
+  changeListeners.length = 0;
+}
+
 // --- onDidCloseTextDocument。__fireDidSave と同じ理由で、拡張ホストが
 // ドキュメントを閉じたことを検知してリスナーを呼ぶ動作を模擬する。
 const closeListeners: ((doc: TextDocumentLike) => void)[] = [];
@@ -477,8 +527,16 @@ export const workspace = {
     // contributor.update 用。本テストの対象経路からは発火させない。
     return { dispose() {} };
   },
-  onDidChangeTextDocument(_listener: unknown): { dispose(): void } {
-    return { dispose() {} };
+  onDidChangeTextDocument(
+    listener: (e: ChangeEvent) => void,
+  ): { dispose(): void } {
+    changeListeners.push(listener);
+    return {
+      dispose() {
+        const i = changeListeners.indexOf(listener);
+        if (i >= 0) changeListeners.splice(i, 1);
+      },
+    };
   },
   onDidCloseTextDocument(
     listener: (doc: TextDocumentLike) => void,

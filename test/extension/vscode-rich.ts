@@ -216,6 +216,9 @@ export const languages = {
   ): { dispose(): void } {
     return { dispose() {} };
   },
+  registerHoverProvider(_selector: unknown, _provider: unknown): { dispose(): void } {
+    return { dispose() {} };
+  },
 };
 
 const commandRegistry = new Map<string, (...args: unknown[]) => unknown>();

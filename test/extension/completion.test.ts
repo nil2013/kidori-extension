@@ -33,7 +33,7 @@ vi.mock("vscode", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
-    CompletionItemKind: { Value: 11, Struct: 21 },
+    CompletionItemKind: { Value: 11, Struct: 21, Variable: 5, EnumMember: 19 },
     CompletionItem: class {
       detail?: string;
       documentation?: unknown;
@@ -294,6 +294,113 @@ describe("CompletionItemProvider", () => {
     expect(
       await complete(master, projectPath, "stocks:\n  - { id: a", 1, 12),
     ).toEqual([]);
+  });
+});
+
+describe("式を受け付けるフィールドの $vars 名・揃えエイリアス補完（SPECS.md §4b:189・§4d）", () => {
+  let tmpDir: string;
+  let projectPath: string;
+  let master: StockMaster;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kidori-completion-expr-"));
+    projectPath = path.join(tmpDir, "uma.kidori.yaml");
+    master = {
+      builtin: loadBuiltinLayer(repoRoot),
+      userStocksPath: userStocksPath({
+        XDG_CONFIG_HOME: path.join(tmpDir, "config"),
+      } as NodeJS.ProcessEnv),
+    };
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const VARS_HEADER = "vars:\n  inset: 50\n  matingAllowance: 38\n";
+
+  it("settings.kerf の値位置で $vars 名を候補に出す（vars が定義されていれば）", async () => {
+    const text = `${VARS_HEADER}settings:\n  kerf: `;
+    const line = text.split("\n").length - 1;
+    const character = text.split("\n")[line].length;
+    const items = await complete(master, projectPath, text, line, character);
+    expect(items.map((i) => i.label)).toEqual(["$inset", "$matingAllowance"]);
+  });
+
+  it("vars が定義されていなければ $vars 補完は出ない（式受け入れフィールドでも）", async () => {
+    const text = "settings:\n  kerf: ";
+    const line = 1;
+    const character = text.split("\n")[1].length;
+    expect(await complete(master, projectPath, text, line, character)).toEqual([]);
+  });
+
+  it("assemblies[].marks[].x では $vars 名に加えて X 軸の揃えエイリアスを出す", async () => {
+    const text =
+      `${VARS_HEADER}assemblies:\n` + "  - id: uma-1\n" + "    marks:\n" + "      - x: ";
+    const lines = text.split("\n");
+    const line = lines.length - 1;
+    const character = lines[line].length;
+    const items = await complete(master, projectPath, text, line, character);
+    expect(items.map((i) => i.label)).toEqual([
+      "$inset",
+      "$matingAllowance",
+      "left",
+      "center",
+      "right",
+    ]);
+  });
+
+  it("assemblies[].marks[].y では Y 軸の揃えエイリアス（bottom/center/top）を出す", async () => {
+    const text =
+      `${VARS_HEADER}assemblies:\n` + "  - id: uma-1\n" + "    marks:\n" + "      - y: ";
+    const lines = text.split("\n");
+    const line = lines.length - 1;
+    const character = lines[line].length;
+    const items = await complete(master, projectPath, text, line, character);
+    expect(items.map((i) => i.label)).toEqual([
+      "$inset",
+      "$matingAllowance",
+      "bottom",
+      "center",
+      "top",
+    ]);
+  });
+
+  it("parts[].features[].x（hole.x）では $vars 名のみで、揃えエイリアスは出さない", async () => {
+    const text =
+      `${VARS_HEADER}parts:\n` +
+      "  - id: p\n" +
+      "    features:\n" +
+      "      - type: hole\n" +
+      "        x: ";
+    const lines = text.split("\n");
+    const line = lines.length - 1;
+    const character = lines[line].length;
+    const items = await complete(master, projectPath, text, line, character);
+    // 揃えエイリアス（left/center/right 等）を含まない。
+    expect(items.map((i) => i.label)).toEqual(["$inset", "$matingAllowance"]);
+  });
+
+  it("式を受け付けないフィールド（id・qty 等）では何も出さない", async () => {
+    const text = `${VARS_HEADER}parts:\n  - id: `;
+    const lines = text.split("\n");
+    const line = lines.length - 1;
+    const character = lines[line].length;
+    expect(await complete(master, projectPath, text, line, character)).toEqual([]);
+  });
+
+  it("length/width の値位置では定尺候補に加えて $vars 名も出る（既存補完の拡張）", async () => {
+    const text = `${VARS_HEADER}stocks:\n  - { id: a, length: `;
+    const lines = text.split("\n");
+    const line = lines.length - 1;
+    const character = lines[line].length;
+    const items = await complete(master, projectPath, text, line, character);
+    const cascade = resolveCascade(master, { documentPath: projectPath, documentText: text });
+    expect(items.map((i) => i.label)).toEqual([
+      ...cascade.lengths.map(String),
+      "$inset",
+      "$matingAllowance",
+    ]);
   });
 });
 

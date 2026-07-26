@@ -33,6 +33,8 @@ import type { ResolvedStock } from "../core/stocks";
 import { assemblyTemplateBody } from "./assemblySnippet";
 import { KidoriPreview, PlanAction, PreviewData } from "./preview";
 import { createCompletionProvider } from "./completion";
+import { createHoverProvider } from "./hover";
+import { reevaluateInMemory } from "./liveEval";
 import {
   SchemaContributor,
   isKidoriCandidatePath,
@@ -156,6 +158,61 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       " ",
       "-",
     ),
+  );
+
+  // --- ホバー（SPECS.md §4d:274「解決値の可視化」。D1: インレイヒントではなく
+  // ホバーを選ぶ）。本体は hover.ts → exprHover.ts の純関数（D3）。ゲートは
+  // gatedCompletion と同じパターン（kidori ファイル以外では発動させない）。
+  // completion.ts と異なり YAML/JSON 両方を対象にする（`resolveHoverText` の
+  // 位置→path 写像が `yaml` パッケージの CST 経由で JSON も等しく扱えるため。
+  // exprHover.ts 冒頭コメント参照）。
+  const hoverProvider = createHoverProvider();
+  const gatedHover: vscode.HoverProvider = {
+    provideHover(document, position, token) {
+      if (!contributor.isKidoriDocument(document)) {
+        return undefined;
+      }
+      return hoverProvider.provideHover(document, position, token);
+    },
+  };
+  context.subscriptions.push(
+    vscode.languages.registerHoverProvider(
+      [
+        { language: "yaml", scheme: "file" },
+        { language: "json", scheme: "file" },
+      ],
+      gatedHover,
+    ),
+  );
+
+  // --- 編集時の意味診断の再評価（SPECS.md §4b:188、設計裁定 D2）。
+  // プレビューは保存駆動のまま（D2。§3:51-53 の「保存 → ビルド → Webview
+  // 即時更新」は仕様として固定）だが、診断はメモリ上のバッファから
+  // debounce 付きで再計算する。debounce 幅は既存のスキーマ用 debounce（300ms。
+  // 上の onDidChangeTextDocument）より大きい 500ms とする: こちらは
+  // `loadProjectFromRaw` の全パイプライン（構造検証＋参照フェーズ＋式解決＋
+  // 幾何フェーズ）を走らせる分だけ重く、高速タイプ中に毎回走らせる価値は
+  // 薄いため（決めた理由は報告参照）。
+  const liveEvalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const LIVE_EVAL_DEBOUNCE_MS = 500;
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument((e) => {
+      if (!isKidoriCandidatePath(e.document.uri.fsPath)) {
+        return;
+      }
+      const key = e.document.uri.toString();
+      const prev = liveEvalTimers.get(key);
+      if (prev) {
+        clearTimeout(prev);
+      }
+      liveEvalTimers.set(
+        key,
+        setTimeout(() => {
+          liveEvalTimers.delete(key);
+          applyLiveDiagnostics(e.document);
+        }, LIVE_EVAL_DEBOUNCE_MS),
+      );
+    }),
   );
 
   // --- Webview プレビュー。
@@ -415,10 +472,12 @@ export function issueSeverityToDiagnosticSeverity(
   }
 }
 
-async function applyDiagnostics(projectPath: string, issues: Issue[]): Promise<void> {
-  const uri = vscode.Uri.file(projectPath);
-  const document = await vscode.workspace.openTextDocument(uri);
-  const diags = issues.map((issue) => {
+/** `Issue[]` → `vscode.Diagnostic[]`（`applyDiagnostics`・`applyLiveDiagnostics` の共通部）。 */
+function buildDiagnostics(
+  document: vscode.TextDocument,
+  issues: Issue[],
+): vscode.Diagnostic[] {
+  return issues.map((issue) => {
     const d = new vscode.Diagnostic(
       locateIssue(document, issue.path),
       `${issue.path}: ${issue.message}`,
@@ -427,7 +486,36 @@ async function applyDiagnostics(projectPath: string, issues: Issue[]): Promise<v
     d.source = "kidori";
     return d;
   });
-  diagnostics.set(uri, diags);
+}
+
+async function applyDiagnostics(projectPath: string, issues: Issue[]): Promise<void> {
+  const uri = vscode.Uri.file(projectPath);
+  const document = await vscode.workspace.openTextDocument(uri);
+  diagnostics.set(uri, buildDiagnostics(document, issues));
+}
+
+/**
+ * 編集時の再評価（D2）が使う同期版。呼び出し側（`onDidChangeTextDocument`）が
+ * 既に対象の `TextDocument` を持っているため、`applyDiagnostics` と異なり
+ * `workspace.openTextDocument` を経由しない（モック環境ではディスクを
+ * 読み直してしまい、未保存の編集内容を失うため。実機の VS Code では同一
+ * ドキュメントが返るはずだが、テスト容易性のためあえて再取得を避ける）。
+ *
+ * kidori ファイル判定（`contributor.isKidoriDocument`）・`reevaluateInMemory` が
+ * `null`（パース不能）を返した場合の「前回診断を維持する」（D2）は本関数自身が
+ * 行う（いずれの場合も診断コレクションへは触れずに戻るだけ＝結果的に維持）。
+ */
+function applyLiveDiagnostics(document: vscode.TextDocument): void {
+  if (!contributor.isKidoriDocument(document)) {
+    return;
+  }
+  const fsPath = document.uri.fsPath;
+  const issues = reevaluateInMemory(document.getText(), fsPath, path.dirname(fsPath));
+  if (issues === null) {
+    // パース不能（構文エラー・重複キー等）: 前回診断を維持する（D2）。
+    return;
+  }
+  diagnostics.set(document.uri, buildDiagnostics(document, issues));
 }
 
 /**

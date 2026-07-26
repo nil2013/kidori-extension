@@ -1,5 +1,6 @@
 /**
- * ドメイン値補完（規格材マスタの4層カスケード駆動。SPECS.md §4b）。
+ * ドメイン値補完（規格材マスタの4層カスケード駆動。SPECS.md §4b、寸法エイリアス・
+ * ミニ式の `$vars`／揃えエイリアス補完。SPECS.md §4b:189・§4d）。
  *
  * JSON Schema の enum では表現できない補完を拡張自身の
  * CompletionItemProvider で提供する:
@@ -7,6 +8,12 @@
  *     ファイル内）が供給する規格材を候補に出し、確定と同時に実値一式と
  *     `preset:` 来歴キーを正本へ実体化する（スニペット展開）。
  *   - length / width の値位置: 定尺候補（910 / 1820 / 2440 …）を提示。
+ *   - 式を受け付けるフィールド（`src/core/expr.ts` の `EXPR_FIELD_CAPABILITIES`
+ *     が単一ソース）の値位置: ファイル内 `vars` で宣言された名前を `$名前` の
+ *     形で候補に出す。`assemblies[].marks[].x`/`.y` はさらに軸別の揃えエイリアス
+ *     （X: left/center/right、Y: bottom/center/top）も候補に加える（D3。
+ *     揃えエイリアスは `hole.x`/`hole.y`・`groove.pos` 等の文脈非依存式フィールド
+ *     には出さない — `fieldExprCapability` の `kind: "positional"` のときのみ）。
  *
  * 「カスケードは補完候補の供給構造であって、ビルドの解決機構ではない」
  * （SPECS.md §4b）。実体化そのものは `core/stocks/materialize.ts` が担い、
@@ -23,7 +30,9 @@
  */
 
 import * as vscode from "vscode";
+import { parseDocument } from "yaml";
 
+import { fieldExprCapability } from "../core/expr";
 import {
   ResolvedStock,
   StockMaster,
@@ -48,6 +57,134 @@ function topLevelSection(
     }
   }
   return null;
+}
+
+/**
+ * `line` から上方向に走査し、`keyNames` に含まれる（インデント任意の）キー行の
+ * うち最も近いものの名前を返す（SPECS.md §4d の `marks`/`features` 判別用）。
+ *
+ * `topLevelSection` と同じ「最も近い一致を単純に優先する」後方走査の簡易さを
+ * 踏襲する（YAML の入れ子構造を厳密には解析しない。既存の簡易さの水準に揃える。
+ * 詳細は報告「決めた事項と理由」参照）。
+ */
+function nearestEnclosingKey(
+  document: vscode.TextDocument,
+  line: number,
+  keyNames: readonly string[],
+): string | null {
+  for (let i = line; i >= 0; i--) {
+    const text = document.lineAt(i).text;
+    const m = /^\s*([A-Za-z][A-Za-z0-9]*)\s*:/.exec(text);
+    if (m && keyNames.includes(m[1])) {
+      return m[1];
+    }
+  }
+  return null;
+}
+
+/**
+ * カーソル位置のフィールドが式を受け付けるか判定するための path パターンを、
+ * `EXPR_FIELD_CAPABILITIES`（`src/core/expr.ts`。単一ソース）の
+ * キー文法（`ident(.ident|[])*`、`vars.*` は特別扱い）に合わせて組み立てる。
+ *
+ * `topLevelSection` から得た区画名と、`fieldName`（直近のキー名）だけでは
+ * `marks[].x`/`marks[].y`（揃えエイリアス可）と `hole.x`/`hole.y`（不可）の
+ * 区別がつかない（どちらもフィールド名は `x`/`y`）ため、`parts`/`assemblies`
+ * 区画では {@link nearestEnclosingKey} で `features`/`marks` の入れ子を
+ * 追加判別する。
+ *
+ * 判定できない・式対象外の区画・フィールドの場合は `null`
+ * （`fieldExprCapability` に投げても必ず `undefined` になるが、区画によっては
+ * パターンの組み立てようがないため早期に `null` で返す）。
+ */
+function exprFieldPattern(
+  document: vscode.TextDocument,
+  line: number,
+  section: string | null,
+  fieldName: string,
+): string | null {
+  switch (section) {
+    case "vars":
+      return "vars.*";
+    case "settings":
+      return `settings.${fieldName}`;
+    case "stocks":
+      return `stocks[].${fieldName}`;
+    case "parts":
+      return nearestEnclosingKey(document, line, ["features"]) === "features"
+        ? `parts[].features[].${fieldName}`
+        : `parts[].${fieldName}`;
+    case "assemblies":
+      return nearestEnclosingKey(document, line, ["marks"]) === "marks"
+        ? `assemblies[].marks[].${fieldName}`
+        : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * ドキュメント内の `vars` で宣言された変数名一覧を返す（同一ファイル内に閉じる。
+ * SPECS.md §4d「参照は同一ファイル内に閉じる」）。
+ *
+ * 補完は typing の途中（例: `stocks:\n  - { id: a, length: `。フロー map が
+ * 閉じていない）で呼ばれるのが常態であり、`yaml` の厳格な `parse()` は
+ * そのような入力全体を例外で拒否してしまう（`stocks/cascade.ts` の
+ * `parseStocksText` が同じ理由で `parseDocument` を使っているのと同型の
+ * 問題）。`parseDocument` は壊れた末尾があっても手前の `vars:` 区画を
+ * 読める範囲で返す（実機確認）ため、`parse` ではなく `parseDocument` +
+ * `toJSON()` を使う。それでも読めない場合は空配列（他の補完と同様、静かに諦める）。
+ */
+function extractVarNames(documentText: string): string[] {
+  try {
+    const raw = parseDocument(documentText).toJSON() as { vars?: unknown } | null;
+    const vars = raw && typeof raw === "object" ? raw.vars : undefined;
+    if (vars && typeof vars === "object" && !Array.isArray(vars)) {
+      return Object.keys(vars as Record<string, unknown>);
+    }
+  } catch {
+    // 編集途中のパース不能な YAML: vars 補完を出さない。
+  }
+  return [];
+}
+
+/** X 軸の揃えエイリアス（SPECS.md §4d:254）。 */
+const X_ALIAS_WORDS = ["left", "center", "right"] as const;
+/** Y 軸の揃えエイリアス（SPECS.md §4d:255）。 */
+const Y_ALIAS_WORDS = ["bottom", "center", "top"] as const;
+
+/**
+ * `document` の `vars` 宣言を `$名前` の形の候補として `items` に追加する
+ * （`vars` が1つも無ければ何もしない）。
+ */
+function pushVarCompletions(
+  items: vscode.CompletionItem[],
+  document: vscode.TextDocument,
+  position: vscode.Position,
+  partial: string,
+): void {
+  const varNames = extractVarNames(document.getText());
+  if (varNames.length === 0) {
+    return;
+  }
+  const range =
+    partial.length > 0
+      ? new vscode.Range(
+          position.line,
+          position.character - partial.length,
+          position.line,
+          position.character,
+        )
+      : undefined;
+  for (const name of varNames) {
+    const item = new vscode.CompletionItem(`$${name}`, vscode.CompletionItemKind.Variable);
+    item.detail = "vars で宣言された名前付き設計値";
+    item.insertText = `$${name}`;
+    if (range) {
+      item.range = range;
+    }
+    items.push(item);
+  }
 }
 
 /** スニペット構文の予約文字（`$` `}` `\`）をエスケープする。 */
@@ -130,7 +267,50 @@ export function createCompletionProvider(
           }
           items.push(item);
         }
+        // length/width も式受け入れフィールド（EXPR_FIELD_CAPABILITIES）なので、
+        // 定尺候補に加えて `$vars` 名も候補に出す（SPECS.md §4b:189）。
+        pushVarCompletions(items, document, position, dimMatch[2]);
         return items;
+      }
+
+      // 式を受け付けるフィールドの値位置: `$vars` 名（＋ marks.x/y の揃えエイリアス）。
+      // stocks 区画の新規エントリ判定より前に見る必要がある
+      // （`stocks[].thickness` のように stocks 区画の既存フィールドとして
+      // 式を受け付けるものがあり、下の stocks ブロックは新規エントリ以外では
+      // 無条件に空配列を返してしまうため。SPECS.md §4b:189）。
+      const exprMatch = /([A-Za-z_][A-Za-z0-9_]*):\s*([$A-Za-z0-9_]*)$/.exec(beforeCursor);
+      if (exprMatch) {
+        const fieldName = exprMatch[1];
+        const partial = exprMatch[2];
+        const pattern = exprFieldPattern(document, position.line, section, fieldName);
+        const capability = pattern ? fieldExprCapability(pattern) : undefined;
+        if (capability) {
+          pushVarCompletions(items, document, position, partial);
+          if (capability.kind === "positional") {
+            const words = capability.axis === "x" ? X_ALIAS_WORDS : Y_ALIAS_WORDS;
+            const range =
+              partial.length > 0
+                ? new vscode.Range(
+                    position.line,
+                    position.character - partial.length,
+                    position.line,
+                    position.character,
+                  )
+                : undefined;
+            for (const word of words) {
+              const item = new vscode.CompletionItem(
+                word,
+                vscode.CompletionItemKind.EnumMember,
+              );
+              item.detail = `${capability.axis === "x" ? "X" : "Y"} 軸の揃えエイリアス`;
+              if (range) {
+                item.range = range;
+              }
+              items.push(item);
+            }
+          }
+          return items;
+        }
       }
 
       // stocks 区画: 規格材の一括挿入（実値＋preset の実体化）。
