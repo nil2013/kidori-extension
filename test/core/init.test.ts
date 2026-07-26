@@ -133,11 +133,23 @@ describe("AGENTS.md（SPECS.md §3b「薄いポインタ方針」のエージェ
     }
   });
 
-  it("PATH 非依存の実行方法（node dist/cli.js 相当）を含む", () => {
+  it("PATH 非依存の実行方法（KIDORI_CLI 経由）を含む", () => {
     init();
     const text = read(AGENTS_FILENAME);
-    expect(text).toContain("node dist/cli.js");
+    expect(text).toContain("KIDORI_CLI");
     expect(text).toContain("npm link");
+  });
+
+  it("絶対パスを埋め込まない（端末ごとに異なるパスをコミットしない）", () => {
+    init();
+    const text = read(AGENTS_FILENAME);
+    expect(text).not.toMatch(/\/Users\/|\/home\/|[A-Za-z]:\\/);
+  });
+
+  it("探索を促す記述を含まない（CWD 脱出の指示を書かない）", () => {
+    init();
+    const text = read(AGENTS_FILENAME);
+    expect(text).not.toContain(".vscode/extensions");
   });
 
   it("「形式仕様は kidori schema で取得する」旨を含む", () => {

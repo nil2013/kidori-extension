@@ -60,7 +60,7 @@ kidori new my-project.kidori.yaml
 node dist/cli.js new my-project.kidori.yaml
 ```
 
-以降の説明では `kidori <サブコマンド>` と表記するが、PATH が通っていない環境では常に `node dist/cli.js <サブコマンド>` に読み替えてよい（bin 宣言だけでは実行手段は保証されない）。
+以降の説明では `kidori <サブコマンド>` と表記するが、PATH が通っていない環境では常に `node dist/cli.js <サブコマンド>` に読み替えてよい（bin 宣言だけでは実行手段は保証されない）。ただし `node dist/cli.js` は**このリポジトリのルートで実行する場合**の相対パスであり、作業ディレクトリ（`*.kidori.yaml` を置いた任意のフォルダ）からは解決しない。作業ディレクトリで CLI を使いたい場合は、PATH を通す（本節の `npm link`）か、CLI 本体へのパスを環境変数 `KIDORI_CLI` に設定して `node "$KIDORI_CLI" <サブコマンド>` で実行する。
 
 ## 4. 使い方
 
@@ -207,7 +207,7 @@ kidori check  <name>.kidori.yaml                        # 構造化診断を JSO
 kidori schema <name>.kidori.yaml                        # このファイル用の合成済みスキーマを stdout へ出力
 ```
 
-`node dist/cli.js <サブコマンド>...` で実行できる（PATH を通す方法は §3 (c) を参照）。
+リポジトリのルートであれば `node dist/cli.js <サブコマンド>...` でも実行できるが、作業ディレクトリ（`*.kidori.yaml` を置いた任意のフォルダ）からは解決しない。作業ディレクトリで使う場合は PATH を通す（§3 (c)）か、`KIDORI_CLI` にパスを設定して `node "$KIDORI_CLI" <サブコマンド>...` で実行する。
 
 - **対象ファイルを省略した場合**、`build`/`watch`/`select` はカレントディレクトリの `*.kidori.{yaml,yml,json}` を探索する。見つかったのが1件ならそれを使い、0件または複数件ならエラー（対象ファイルの明示を促す）。`check`/`schema` は対象ファイルの省略を受け付けず、常に明示が必要。
 - `kidori new`: `--preset <キー>` を反復指定すると、既定のサンプル部材ではなく指定した規格材マスタのキー（例: `spf/1x4/6f`）を実体化して書き出す。未知のキーを渡すとエラーで利用可能なキー一覧が表示される。

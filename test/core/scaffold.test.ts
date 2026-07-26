@@ -287,7 +287,7 @@ describe("createScaffold（AGENTS.md の併せ生成。SPECS.md §3a）", () => 
     // kidori init と同一のテンプレート（薄いポインタ方針）。
     const text = fs.readFileSync(path.join(dir, AGENTS_FILENAME), "utf-8");
     expect(text).toContain("kidori schema");
-    expect(text).toContain("node dist/cli.js");
+    expect(text).toContain("KIDORI_CLI");
   });
 
   it("既存の AGENTS.md は絶対に上書きしない（内容が保存される）", () => {

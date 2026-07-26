@@ -26,17 +26,24 @@ kidori schema <ファイル名>
 | `kidori check <ファイル>` | ビルドせずに検証だけを行い、診断を構造化 JSON で出力する |
 | `kidori schema <ファイル>` | このファイル用の合成済みスキーマを stdout へ出力する |
 
-## 実行方法（PATH 非依存）
+## 実行方法
 
-`kidori` が PATH に通っている環境ではそのまま実行できる（セットアップ時に
-`npm link` 等で通す）。通っていない環境では、リポジトリの `dist/cli.js` を
-`node` 経由で直接実行する:
+主経路は PATH 上の `kidori` コマンド:
 
 ```
-node dist/cli.js <サブコマンド> ...
+kidori <サブコマンド> ...
 ```
 
-例: `node dist/cli.js new bookshelf.kidori.yaml` / `node dist/cli.js build bookshelf.kidori.yaml`
+`kidori` が見つからない場合、この環境では CLI のセットアップが未完了である。
+**このディレクトリの外を探索しないこと**（`cli.js` の在り処をファイルシステム
+から探し回らないこと）。環境変数 `KIDORI_CLI` に CLI 本体へのパスが設定されて
+いれば、それで実行できる:
+
+```
+node "$KIDORI_CLI" <サブコマンド> ...
+```
+
+どちらも使えない場合は、`npm link` の実行または `KIDORI_CLI` の設定をユーザーに依頼すること。
 
 ## 出力物
 
