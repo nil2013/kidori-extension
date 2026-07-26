@@ -67,7 +67,7 @@ describe("stocksFile: 正常系", () => {
     write("stocks.yaml", `stocks:\n  - ${BAR}\n  - ${SHEET}\n`);
     const p = writeProject(`
 stocksFile: ./stocks.yaml
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 stocks: []
 parts:
   - { id: p1, label: 部材, qty: 1, stock: b1, length: 500 }
@@ -85,7 +85,7 @@ parts:
     const p = writeProject(
       `
 stocksFile: ../shared/stocks.yaml
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 stocks: []
 parts:
   - { id: p1, label: 部材, qty: 1, stock: b1, length: 500 }
@@ -107,7 +107,7 @@ parts:
     );
     const p = writeProject(`
 stocksFile: ./stocks.json
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 stocks: []
 parts:
   - { id: p1, label: 部材, qty: 1, stock: b1, length: 500 }
@@ -123,7 +123,7 @@ parts:
     );
     const p = writeProject(`
 stocksFile: ./stocks.yaml
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 stocks: []
 parts:
   - { id: p1, label: 部材, qty: 1, stock: b1, length: 500 }
@@ -145,7 +145,7 @@ describe("stocksFile: id 衝突", () => {
     );
     const p = writeProject(`
 stocksFile: ./stocks.yaml
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 stocks:
   - { id: b1, label: 手元の棒, kind: bar, length: 1820, width: 89, thickness: 19 }
 parts:
@@ -171,7 +171,7 @@ parts:
 describe("stocksFile: error 経路", () => {
   const projectBody = (ref: string): string => `
 stocksFile: ${ref}
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 stocks:
   - ${BAR}
 parts:
@@ -252,7 +252,7 @@ describe("stocksFile: 意味検証の適用", () => {
     );
     const p = writeProject(`
 stocksFile: ./stocks.yaml
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 stocks: []
 parts:
   - { id: p1, label: 部材, qty: 1, stock: CON, length: 500 }
@@ -265,7 +265,7 @@ parts:
     write("stocks.yaml", `stocks:\n  - ${BAR}\n`);
     const p = writeProject(`
 stocksFile: ./stocks.yaml
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 stocks: []
 parts:
   - { id: p1, label: 部材, qty: 1, stock: b1, length: 9999 }
@@ -277,7 +277,7 @@ parts:
     write("stocks.yaml", `stocks:\n  - ${BAR}\n  - ${BAR}\n`);
     const p = writeProject(`
 stocksFile: ./stocks.yaml
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 stocks: []
 parts:
   - { id: p1, label: 部材, qty: 1, stock: b1, length: 500 }
@@ -307,7 +307,7 @@ describe("loadStocksFile / baseDir 未指定", () => {
     );
     const p = writeProject(`
 stocksFile: ./stocks.yaml
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 stocks: []
 parts:
   - { id: p1, label: 部材, qty: 1, stock: b1, length: 500 }
@@ -323,7 +323,7 @@ parts:
     );
     const p = writeProject(`
 stocksFile: ./stocks.yaml
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 stocks: []
 parts:
   - { id: p1, label: 部材, qty: 1, stock: b1, length: 500 }
@@ -339,7 +339,7 @@ parts:
   it("baseDir 未指定の loadProjectFromRaw は warning を出して参照を無視する", () => {
     const { project, issues } = loadProjectFromRaw({
       stocksFile: "./stocks.yaml",
-      meta: { project: "テスト", units: "mm", schemaVersion: "0.4" },
+      meta: { project: "テスト", units: "mm", schemaVersion: "0.5" },
       stocks: [
         { id: "b1", label: "棒", kind: "bar", length: 1820, width: 89, thickness: 19 },
       ],

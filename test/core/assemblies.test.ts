@@ -29,7 +29,7 @@ import { Project } from "../../src/core/types";
  * 補った部分以外は改変していない。
  */
 const SPECS_4C_YAML = `\
-meta: { project: ウマ, units: mm, schemaVersion: "0.4" }
+meta: { project: ウマ, units: mm, schemaVersion: "0.5" }
 
 stocks:
   - { id: 2x4-6f, preset: spf/2x4/6f, label: "2×4材 6F", kind: bar, length: 1820, width: 89, thickness: 38, price: 598 }
@@ -55,7 +55,7 @@ assemblies:
 /** bar 材1本＋sheet 材1枚と3形状からなる、物理的に整合する raw プロジェクト。 */
 function baseRaw(): any {
   return {
-    meta: { project: "テスト", units: "mm", schemaVersion: "0.4" },
+    meta: { project: "テスト", units: "mm", schemaVersion: "0.5" },
     settings: { kerf: 3, edgeTrim: 5 },
     stocks: [
       {

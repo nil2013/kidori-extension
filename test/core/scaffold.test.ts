@@ -108,14 +108,14 @@ describe("createScaffold（既定の雛形）", () => {
     expect(data.stocks).toHaveLength(1);
   });
 
-  it("meta.project は正本の stem、schemaVersion は 0.4", () => {
+  it("meta.project は正本の stem、schemaVersion は 0.5", () => {
     const data = parse(fs.readFileSync(scaffold("bookshelf"), "utf-8")) as {
       meta: { project: string; units: string; schemaVersion: string };
     };
     expect(data.meta).toEqual({
       project: "bookshelf",
       units: "mm",
-      schemaVersion: "0.4",
+      schemaVersion: "0.5",
     });
   });
 

@@ -301,7 +301,7 @@ describe("--with-stocks（共有 stocks.yaml）", () => {
     fs.writeFileSync(
       p,
       [
-        'meta: { project: 共有, units: mm, schemaVersion: "0.4" }',
+        'meta: { project: 共有, units: mm, schemaVersion: "0.5" }',
         `stocksFile: ./${SHARED_STOCKS_FILENAME}`,
         "stocks: []",
         "parts:",

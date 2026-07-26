@@ -59,7 +59,7 @@ import {
 export const DEFAULT_SCAFFOLD_SUFFIX = ".kidori.yaml";
 
 /** 雛形が書き込む `meta.schemaVersion`（loader.SUPPORTED_SCHEMA_VERSION と同値）。 */
-export const SCAFFOLD_SCHEMA_VERSION = "0.4";
+export const SCAFFOLD_SCHEMA_VERSION = "0.5";
 
 /** 既定の雛形が使うビルトインのマスタキー（bar: アクティブ / sheet: コメントアウト）。 */
 export const DEFAULT_BAR_PRESET = "spf/1x4/6f";

@@ -48,7 +48,7 @@ import { EXPR_FIELD_CAPABILITIES } from "../../src/core/expr";
 
 const SPECS_EXAMPLE_YAML = `\
 # yaml-language-server: $schema=./kidori.schema.json
-meta: { project: 書棚, units: mm, schemaVersion: "0.4" }
+meta: { project: 書棚, units: mm, schemaVersion: "0.5" }
 
 settings:
   kerf: 3            # 鋸刃厚（mm）
@@ -79,7 +79,7 @@ parts:
 /** conftest.py の minimal_project 相当（スキーマ層の検証対象として使う）。 */
 function minimalProject(): any {
   return {
-    meta: { project: "テスト棚", units: "mm", schemaVersion: "0.4" },
+    meta: { project: "テスト棚", units: "mm", schemaVersion: "0.5" },
     settings: { kerf: 3, edgeTrim: 5, candidates: 3, selectedPlan: null },
     stocks: [
       {
@@ -408,7 +408,7 @@ describe("スキーマ検証", () => {
       dia: 4,
     };
     const project = {
-      meta: { project: "p", units: "mm", schemaVersion: "0.4" },
+      meta: { project: "p", units: "mm", schemaVersion: "0.5" },
       stocks: [
         { id: "s1", label: "s1", kind: "sheet", length: 1000, width: 1000, thickness: 10 },
       ],

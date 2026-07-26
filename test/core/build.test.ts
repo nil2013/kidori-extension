@@ -495,7 +495,7 @@ parts:
   it("schema.json は stocks[].id の変化に追随して再生成される", () => {
     const p = path.join(dir, "project.kidori.yaml");
     const yaml = (stockId: string): string => `
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 settings: { exact: off }
 stocks:
   - { id: ${stockId}, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19 }
@@ -551,7 +551,7 @@ function writeIn(subdir: string, body: string): string {
 }
 
 const UMA_STOCKS = `
-meta: { project: ウマ, units: mm, schemaVersion: "0.4" }
+meta: { project: ウマ, units: mm, schemaVersion: "0.5" }
 settings: { kerf: 3, edgeTrim: 5, exact: off, selectedPlan: null }
 stocks:
   - { id: 2x4-6f, label: "2×4材 6F", kind: bar, length: 1820, width: 89, thickness: 38, price: 498 }
@@ -751,7 +751,7 @@ describe("build（v0.7: marks は加工指示図のみ・割付に不干渉）",
 
 describe("build（v0.7: assemblies 不在時の回帰防止）", () => {
   const legacyYaml = `
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 settings: { kerf: 3, edgeTrim: 5, exact: off, selectedPlan: null }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19, price: 382 }
@@ -802,7 +802,7 @@ parts:
     // 「assemblies の導入それ自体」が図面を動かさないことの担保
     // （SPECS §4c:211「構成の区別が木取り図・歩留まりに影響することはない」）。
     const withAssemblies = `
-meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+meta: { project: テスト, units: mm, schemaVersion: "0.5" }
 settings: { kerf: 3, edgeTrim: 5, exact: off, selectedPlan: null }
 stocks:
   - { id: b1, label: 棒, kind: bar, length: 1820, width: 89, thickness: 19, price: 382 }
