@@ -1,10 +1,12 @@
 /**
- * schema.ts のテスト（Python 版 tests/test_schema.py の移植 ＋ v0.4 追加要件）。
+ * schema.ts のテスト（Python 版 tests/test_schema.py の移植 ＋ v0.4 追加要件 ＋
+ * U-SCHEMA: SPECS §4d ミニ式のスキーマ受理）。
  *
  * 対象: 生成スキーマの構造、SPECS §4 の例 YAML が（スキーマ層としては）pass
  * すること、未知キー・不正 stock 参照（enum）・負の寸法が fail すること、
  * stocks 空のとき enum が無いこと、v0.4 追加（rank / exact / selectedPlan "X" /
- * id pattern）。
+ * id pattern）、U-SCHEMA 追加（トップレベル vars 区画、式許可フィールドの
+ * number|string union、リテラル限定フィールドの維持、層1/層2の責務境界）。
  *
  * スキーマ検証の実行には loader.ts の validateAgainstSchema を使う
  * （Python 版が jsonschema の Draft202012Validator を直接使っていた箇所に対応。
@@ -12,6 +14,16 @@
  *
  * 注意: 「SPECS 例 YAML の pass」はスキーマ層（形式検証）のみを指す。
  * side-0 の物理的な詰め込み可否（意味検証層）は loader.test.ts 側で扱う。
+ *
+ * U-SCHEMA の層境界について（重要・報告参照）: 本ユニット時点で loader.ts の
+ * 層2（意味検証）は `src/core/expr.ts` をまだ呼び出していない（U-PIPE 未着手。
+ * `a83858b` のコミットメッセージ「loader への統合は行っていない（後続）」の通り）。
+ * そのため、式の文法違反・未知エイリアス・文脈不適合エイリアス・vars の未定義/
+ * 循環参照は、現時点では**層1でも層2でも検出されない**（layer2 に到達する前に
+ * `Number(文字列)` が `NaN` になり、多くの意味検証チェックが NaN 比較で
+ * silently false になるため）。このファイルの「層1/層2の責務分担」節はこの
+ * 現状を実機で確認した上で明示的にロックしており、U-PIPE 実装後にこれらの
+ * テストが失敗し始めることを意図した検知シグナルとして残す。
  */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -21,7 +33,7 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { validateAgainstSchema } from "../../src/core/loader";
+import { loadProjectFromRaw, validateAgainstSchema } from "../../src/core/loader";
 import {
   DESCRIPTIONS,
   DRAFT_2020_12,
@@ -32,6 +44,7 @@ import {
   schemaJson,
   writeBaseSchema,
 } from "../../src/core/schema";
+import { EXPR_FIELD_CAPABILITIES } from "../../src/core/expr";
 
 const SPECS_EXAMPLE_YAML = `\
 # yaml-language-server: $schema=./kidori.schema.json
@@ -186,22 +199,25 @@ describe("スキーマの構造", () => {
     }
   });
 
-  it("v0.7d: marks の x/y は center を含む3値のエイリアス enum を持つ（演算子・$参照は不可）", () => {
+  it("U-SCHEMA: marks の x/y は number|string の2分岐 oneOf に緩む（専用エイリアス enum ブランチは廃止）", () => {
+    // SPECS §4d:245 により marks[].x/y は位置式（揃えエイリアス＋ミニ式）を受け付ける。
+    // 以前の3値限定 enum ブランチ（["left","right","center"] 等）は廃止し、
+    // 汎用 string ブランチに統合した。理由（D3 実機確認。下の「D3」セクション参照）:
+    // enum ブランチと汎用 string ブランチを両方 oneOf に残すと、エイリアス文字列
+    // （例: "center"）が両方に一致してしまい oneOf の「ちょうど1件」制約に反して
+    // 逆に弾かれてしまうため。
     const schema = buildSchema([]) as any;
     const branches = schema.properties.assemblies.items.properties.marks.items.oneOf as any[];
 
     for (const branch of branches) {
-      // oneOf[0] は number、oneOf[1] が端揃え・中央揃えエイリアスの enum。
-      const xAlias = branch.properties.x.oneOf[1];
-      const yAlias = branch.properties.y.oneOf[1];
-      expect(xAlias.enum).toEqual(["left", "right", "center"]);
-      expect(yAlias.enum).toEqual(["bottom", "top", "center"]);
-      // ミニ式・$vars 参照はスコープ外: enum に演算子入り文字列や $ 参照が
-      // 混入していないことを明示的に確認する（部分実装された構文の混入防止）。
-      for (const alias of [xAlias, yAlias]) {
-        for (const v of alias.enum as string[]) {
-          expect(v).not.toMatch(/[-+$]/);
-        }
+      for (const key of ["x", "y"] as const) {
+        const prop = branch.properties[key];
+        expect(prop.oneOf, key).toHaveLength(2);
+        expect(prop.oneOf[0].type, key).toBe("number");
+        expect(prop.oneOf[0].minimum, key).toBe(0);
+        expect(prop.oneOf[1].type, key).toBe("string");
+        expect(prop.oneOf[1].minLength, key).toBe(1);
+        expect("enum" in prop.oneOf[1], key).toBe(false);
       }
     }
   });
@@ -289,14 +305,22 @@ describe("スキーマ検証", () => {
     expect(validate(data)).not.toEqual([]);
   });
 
-  it("v0.7d: トップレベル vars 区画は fail する（SPECS §4d はスコープ外）", () => {
+  it("U-SCHEMA: トップレベル vars 区画は pass する（SPECS §4d。値は number または非空文字列）", () => {
     const data = minimalProject();
-    data.vars = { inset: 50 };
+    data.vars = { inset: 50, matingAllowance: "$inset + 10" };
 
-    expect(validate(data)).not.toEqual([]);
+    expect(validate(data)).toEqual([]);
   });
 
-  it("v0.7d: marks.x/y は center 以外の未知エイリアス文字列を fail する", () => {
+  it("U-SCHEMA: vars の値が number/string 以外なら層1で fail する（型のみ層1が縛る。名前の妥当性・循環・未定義参照は層2＝U-PIPE の担当）", () => {
+    for (const badValue of [true, null, [1, 2], { nested: 1 }]) {
+      const data = minimalProject();
+      data.vars = { inset: badValue };
+      expect(validate(data), JSON.stringify(badValue)).not.toEqual([]);
+    }
+  });
+
+  it("U-SCHEMA: marks.x/y は center 等のエイリアス文字列を pass する（今回追加したエイリアス）", () => {
     const data = minimalProject();
     data.assemblies = [
       {
@@ -305,11 +329,10 @@ describe("スキーマ検証", () => {
         marks: [{ on: "shelf-0", face: "front", w: 10, h: 10, x: "center", y: "center" }],
       },
     ];
-    // center 自体は pass する（今回追加したエイリアス）。
     expect(validate(data)).toEqual([]);
   });
 
-  it("v0.7d: marks.x に演算子入り文字列（ミニ式）を指定すると fail する（SPECS §4d はスコープ外）", () => {
+  it("U-SCHEMA: marks.x に演算子入り文字列（ミニ式）を指定すると pass する（SPECS §4d。文法の権威は層2）", () => {
     const data = minimalProject();
     data.assemblies = [
       {
@@ -319,11 +342,10 @@ describe("スキーマ検証", () => {
       },
     ];
 
-    const issues = validate(data);
-    expect(issues.length).toBeGreaterThan(0);
+    expect(validate(data)).toEqual([]);
   });
 
-  it("v0.7d: marks.x に $ 変数参照を指定すると fail する（SPECS §4d の vars 参照はスコープ外）", () => {
+  it("U-SCHEMA: marks.x に $ 変数参照を指定すると pass する（SPECS §4d。vars 参照の解決は層2＝U-PIPE の担当）", () => {
     const data = minimalProject();
     data.assemblies = [
       {
@@ -333,8 +355,7 @@ describe("スキーマ検証", () => {
       },
     ];
 
-    const issues = validate(data);
-    expect(issues.length).toBeGreaterThan(0);
+    expect(validate(data)).toEqual([]);
   });
 
   it("未知の part キーは fail する", () => {
@@ -440,6 +461,336 @@ describe("スキーマ検証", () => {
     const bad = minimalProject();
     bad.settings.selectedPlan = "D";
     expect(validate(bad).some((i) => i.path === "settings.selectedPlan")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U-SCHEMA: 式許可フィールド（SPECS §4d:244-245。EXPR_FIELD_CAPABILITIES が単一ソース）
+// ---------------------------------------------------------------------------
+
+describe("U-SCHEMA: 式許可フィールドは number|string の oneOf に緩む（D1: 数値ブランチの制約は維持）", () => {
+  // minimalProject().parts[1]（side-0）は sheet 部材で width・groove・hole を
+  // 持つため、これを使い回して各フィールドへ値を設定する。
+  const cases: { label: string; set: (data: any, value: unknown) => void }[] = [
+    { label: "settings.kerf", set: (d, v) => (d.settings.kerf = v) },
+    { label: "settings.edgeTrim", set: (d, v) => (d.settings.edgeTrim = v) },
+    { label: "stocks[].length", set: (d, v) => (d.stocks[0].length = v) },
+    { label: "stocks[].width", set: (d, v) => (d.stocks[0].width = v) },
+    { label: "stocks[].thickness", set: (d, v) => (d.stocks[0].thickness = v) },
+    { label: "parts[].length", set: (d, v) => (d.parts[1].length = v) },
+    { label: "parts[].width", set: (d, v) => (d.parts[1].width = v) },
+    { label: "groove.pos", set: (d, v) => (d.parts[1].features[0].pos = v) },
+    { label: "groove.width", set: (d, v) => (d.parts[1].features[0].width = v) },
+    { label: "groove.depth", set: (d, v) => (d.parts[1].features[0].depth = v) },
+    { label: "groove.from", set: (d, v) => (d.parts[1].features[0].from = v) },
+    { label: "groove.to", set: (d, v) => (d.parts[1].features[0].to = v) },
+    { label: "hole.x", set: (d, v) => (d.parts[1].features[1].x = v) },
+    { label: "hole.y", set: (d, v) => (d.parts[1].features[1].y = v) },
+    { label: "hole.dia", set: (d, v) => (d.parts[1].features[1].dia = v) },
+  ];
+
+  for (const { label, set } of cases) {
+    it(`${label}: 数値のほか文字列式（"$a + $b"）を pass する`, () => {
+      const data = minimalProject();
+      set(data, "$a + $b");
+      expect(validate(data), label).toEqual([]);
+    });
+
+    it(`${label}: 負の数値リテラルは引き続き fail する（D1）`, () => {
+      const data = minimalProject();
+      set(data, -100);
+      expect(validate(data), label).not.toEqual([]);
+    });
+  }
+
+  it("marks[].w / marks[].h: 数値のほか文字列式を pass し、負のリテラルは引き続き fail する", () => {
+    function withMark(w: unknown, h: unknown): any {
+      const data = minimalProject();
+      data.assemblies = [
+        {
+          id: "asm",
+          contains: { "shelf-0": 1 },
+          marks: [{ on: "shelf-0", face: "front", w, h, x: 0, y: 0 }],
+        },
+      ];
+      return data;
+    }
+
+    expect(validate(withMark("$a + $b", "$c - 1"))).toEqual([]);
+    expect(validate(withMark(-1, 10))).not.toEqual([]);
+    expect(validate(withMark(10, -1))).not.toEqual([]);
+  });
+
+  it("hole.depth: null（省略時の意味）・数値・文字列式のいずれも pass し、負のリテラルは fail する", () => {
+    const okNull = minimalProject();
+    okNull.parts[1].features[1].depth = null;
+    expect(validate(okNull)).toEqual([]);
+
+    const okExpr = minimalProject();
+    okExpr.parts[1].features[1].depth = "$a + $b";
+    expect(validate(okExpr)).toEqual([]);
+
+    const bad = minimalProject();
+    bad.parts[1].features[1].depth = -5;
+    expect(validate(bad)).not.toEqual([]);
+  });
+});
+
+describe("U-SCHEMA: D3（oneOf と既存の最小バリデータの相互作用。実機確認）", () => {
+  it("stocks[].length: 負のリテラルは0件一致で oneOf の1エラーのみになる（exclusiveMinimum の個別メッセージと重複しない）", () => {
+    const data = minimalProject();
+    data.stocks[0].length = -5;
+    const issues = validate(data);
+    const forThisPath = issues.filter((i) => i.path === "stocks[0].length");
+
+    expect(forThisPath).toHaveLength(1);
+    expect(forThisPath[0].message).toContain("排他的な形式のいずれにも一致しません");
+  });
+
+  it("stocks[].length: 有効な文字列式は数値ブランチの exclusiveMinimum を経由せず素通りする（二重診断なし）", () => {
+    const data = minimalProject();
+    data.stocks[0].length = "$a + $b";
+    expect(validate(data)).toEqual([]);
+  });
+
+  it("stocks[].length: 数値でも文字列でもない値（boolean）は0件一致で fail する", () => {
+    const data = minimalProject();
+    data.stocks[0].length = true;
+    expect(validate(data).some((i) => i.path === "stocks[0].length")).toBe(true);
+  });
+
+  it('marks.x: エイリアス文字列 "center" は number ブランチにも string ブランチにも同時一致しない（2ブランチ oneOf でちょうど1件）', () => {
+    // 3ブランチ構成（number / 専用 enum / 汎用 string）だと "center" が
+    // enum ブランチと string ブランチの両方に一致し oneOf の「ちょうど1件」制約
+    // に反して逆に fail していた（この事故を防ぐために2ブランチへ統合した。
+    // 上の「マークの x/y は number|string の2分岐 oneOf」テストと対）。
+    const data = minimalProject();
+    data.assemblies = [
+      {
+        id: "asm",
+        contains: { "shelf-0": 1 },
+        marks: [{ on: "shelf-0", face: "front", w: 10, h: 10, x: "center", y: 0 }],
+      },
+    ];
+    expect(validate(data)).toEqual([]);
+  });
+
+  it('空文字列は層1で fail する（string ブランチの minLength: 1 により、空の式は最初の文字すら無いため両ブランチ0件一致になる）', () => {
+    const data = minimalProject();
+    data.stocks[0].length = "";
+    expect(validate(data).some((i) => i.path === "stocks[0].length")).toBe(true);
+  });
+});
+
+describe("U-SCHEMA: リテラル限定フィールドは式（文字列）を層1で fail する（SPECS §4d:246）", () => {
+  it("stocks[].price に式文字列を指定すると fail する", () => {
+    const data = minimalProject();
+    data.stocks[0].price = "$a + $b";
+    expect(validate(data).some((i) => i.path === "stocks[0].price")).toBe(true);
+  });
+
+  it("parts[].qty に式文字列を指定すると fail する", () => {
+    const data = minimalProject();
+    data.parts[0].qty = "$a + $b";
+    expect(validate(data).some((i) => i.path === "parts[0].qty")).toBe(true);
+  });
+
+  it("assemblies[].contains の個数に式文字列を指定すると fail する", () => {
+    const data = minimalProject();
+    data.assemblies = [{ id: "asm", contains: { "shelf-0": "$a" } }];
+    expect(validate(data).some((i) => i.path === "assemblies[0].contains")).toBe(true);
+  });
+
+  it("settings.candidates に式文字列を指定すると fail する", () => {
+    const data = minimalProject();
+    data.settings.candidates = "$a + $b";
+    expect(validate(data).some((i) => i.path === "settings.candidates")).toBe(true);
+  });
+
+  it("parts[].rot に式文字列を指定すると fail する（boolean 限定）", () => {
+    const data = minimalProject();
+    data.parts[1].rot = "$a";
+    expect(validate(data).some((i) => i.path === "parts[1].rot")).toBe(true);
+  });
+
+  it("settings.selectedPlan に式文字列を指定すると fail する（A/B/C/X/null の enum 限定）", () => {
+    const data = minimalProject();
+    data.settings.selectedPlan = "$a + $b";
+    expect(validate(data).some((i) => i.path === "settings.selectedPlan")).toBe(true);
+  });
+});
+
+describe("U-SCHEMA: EXPR_FIELD_CAPABILITIES（expr.ts）とスキーマの union 化フィールドの対応（単一ソース照合）", () => {
+  function isExprOneOf(prop: any): boolean {
+    return (
+      Array.isArray(prop?.oneOf) &&
+      prop.oneOf.length === 2 &&
+      prop.oneOf[0]?.type === "number" &&
+      prop.oneOf[1]?.type === "string"
+    );
+  }
+
+  it("スキーマで number|string の oneOf に緩めたフィールド集合は EXPR_FIELD_CAPABILITIES の完全列挙（vars.* を除く）と過不足なく一致する", () => {
+    const schema = buildSchema([]) as any;
+    const settings = schema.properties.settings.properties;
+    const stock = schema.properties.stocks.items.properties;
+    const part = schema.properties.parts.items.properties;
+    const groove = schema.properties.parts.items.properties.features.items.oneOf[0].properties;
+    const hole = schema.properties.parts.items.properties.features.items.oneOf[1].properties;
+    const markRef = schema.properties.assemblies.items.properties.marks.items.oneOf[0].properties;
+    const markWH = schema.properties.assemblies.items.properties.marks.items.oneOf[1].properties;
+
+    const actual: Record<string, boolean> = {
+      "settings.kerf": isExprOneOf(settings.kerf),
+      "settings.edgeTrim": isExprOneOf(settings.edgeTrim),
+      "stocks[].length": isExprOneOf(stock.length),
+      "stocks[].width": isExprOneOf(stock.width),
+      "stocks[].thickness": isExprOneOf(stock.thickness),
+      "parts[].length": isExprOneOf(part.length),
+      "parts[].width": isExprOneOf(part.width),
+      "parts[].features[].pos": isExprOneOf(groove.pos),
+      "parts[].features[].width": isExprOneOf(groove.width),
+      // groove.depth 側を代表として確認する（hole.depth は null 分岐を含む特殊形
+      // のため isExprOneOf の単純形にそぐわず、別テストで個別に確認済み）。
+      "parts[].features[].depth": isExprOneOf(groove.depth),
+      "parts[].features[].from": isExprOneOf(groove.from),
+      "parts[].features[].to": isExprOneOf(groove.to),
+      "parts[].features[].x": isExprOneOf(hole.x),
+      "parts[].features[].y": isExprOneOf(hole.y),
+      "parts[].features[].dia": isExprOneOf(hole.dia),
+      "assemblies[].marks[].x": isExprOneOf(markRef.x),
+      "assemblies[].marks[].y": isExprOneOf(markRef.y),
+      "assemblies[].marks[].w": isExprOneOf(markWH.w),
+      "assemblies[].marks[].h": isExprOneOf(markWH.h),
+    };
+
+    for (const [path, isExpr] of Object.entries(actual)) {
+      expect(isExpr, path).toBe(true);
+    }
+
+    const expectedKeys = new Set(Object.keys(EXPR_FIELD_CAPABILITIES));
+    expectedKeys.delete("vars.*"); // additionalProperties 側で別途表現。次のテストで確認する。
+    expect(new Set(Object.keys(actual))).toEqual(expectedKeys);
+  });
+
+  it("vars.* は additionalProperties の number|string oneOf として表現されている", () => {
+    const schema = buildSchema([]) as any;
+    const varsValueSchema = schema.properties.vars.additionalProperties as any;
+
+    expect(varsValueSchema.oneOf).toHaveLength(2);
+    expect(varsValueSchema.oneOf[0].type).toBe("number");
+    expect(varsValueSchema.oneOf[1].type).toBe("string");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U-SCHEMA: 層1／層2の責務分担（現状の実装境界。報告参照）
+//
+// U-PIPE（loader への式解決器統合）は本ユニット時点では未着手であり、
+// `src/core/expr.ts` は loader.ts から一切呼ばれていない
+// （`a83858b` のコミットメッセージ「loader への統合は行っていない（後続）」）。
+// そのため、以下のケースはいずれも「層1は文字列として pass させる（D2）」
+// ところまでは意図どおりだが、「現状の層2（loadProjectFromRaw のフル
+// パイプライン）でも検出されない」。多くの場合 `Number(文字列)` が `NaN` に
+// なり、既存の意味検証チェック（`checkGroove`/`checkHole` 等）の比較が
+// NaN によって静かに false になるため（NaN との比較は常に false）。
+//
+// これは「層2が拒否する」という当初の想定に反する実機確認済みの既知の
+// ギャップであり、U-PIPE 実装によって埋まる想定である。U-PIPE 実装後は
+// このブロックのテストが失敗し始めることを意図した検知シグナルとして残す
+// （失敗したら、このブロックを「層2で正しく error になる」テストへ更新する）。
+//
+// 式のパース自体の拒否（乗除・括弧・関数・条件分岐・ドット参照・未知
+// エイリアス・vars の未定義/循環参照・空式・演算子連続・末尾演算子・指数
+// 表記）は `src/core/expr.ts` 単体では既に test/core/expr.test.ts（U-EXPR）が
+// 固定済み。ここでの主眼は「schema/loader 境界を実際に通したときに何が
+// 起きるか」であり、パーサの網羅テストを重複させることではない。
+// ---------------------------------------------------------------------------
+
+describe("U-SCHEMA: 層1／層2の責務分担（現状の実装境界。U-PIPE 未着手）", () => {
+  function expectPassesLayer1AndCurrentlyUncaughtByLayer2(mutate: (data: any) => void): void {
+    const data = minimalProject();
+    mutate(data);
+
+    expect(validate(data), "層1").toEqual([]);
+
+    const { project, issues } = loadProjectFromRaw(data, {});
+    expect(project, `層2（現状。issues=${JSON.stringify(issues)}）`).not.toBeNull();
+  }
+
+  it("乗算 $a * 2（SPECS §4d が明示的に禁じる構文）", () => {
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "$a * 2"));
+  });
+
+  it("除算 $a / 2", () => {
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "$a / 2"));
+  });
+
+  it("括弧 ($a + $b)", () => {
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "($a + $b)"));
+  });
+
+  it("関数呼び出し max($a, $b)", () => {
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "max($a, $b)"));
+  });
+
+  it("条件分岐（三項演算子）", () => {
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2(
+      (d) => (d.stocks[0].length = "$a > 0 ? $a : 0"),
+    );
+  });
+
+  it("ドット入り識別子（他部材フィールドの直接参照）$parts.leg.length", () => {
+    // parts[1]（side-0。sheet 部材）の length に設定すると、NaN が
+    // checkPhysicalFit の fits 判定（`<=` 比較。NaN は常に false）を通じて
+    // 「収まらない」という**別の理由**でたまたま error になってしまい、
+    // 「現状の層2は式を検出しない」という本テストの主張とは無関係の error で
+    // 汚染される（実機確認済み。bar 部材の checkPhysicalFit は逆に NaN を
+    // 素通りする。層により NaN の伝播先が異なり挙動が非対称なため、
+    // stocks[].length を使う）。
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2(
+      (d) => (d.stocks[0].length = "$parts.leg.length"),
+    );
+  });
+
+  it('未知エイリアス "middle"（marks.x）', () => {
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => {
+      d.assemblies = [
+        {
+          id: "asm",
+          contains: { "shelf-0": 1 },
+          marks: [{ on: "shelf-0", face: "front", w: 10, h: 10, x: "middle", y: 0 }],
+        },
+      ];
+    });
+  });
+
+  it('文脈非依存フィールド（hole.x）へのエイリアス "center"（marks 専用のエイリアスは hole では無効）', () => {
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.parts[1].features[1].x = "center"));
+  });
+
+  it('文脈非依存フィールド（groove.pos）へのエイリアス "left"', () => {
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.parts[1].features[0].pos = "left"));
+  });
+
+  it('vars 内のエイリアス "right"（vars は文脈非依存式のみを許し位置エイリアス不可。かつ現状の層2は vars を一切読まない）', () => {
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.vars = { a: "right" }));
+  });
+
+  it("未定義変数 $doesNotExist", () => {
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "$doesNotExist"));
+  });
+
+  it("演算子の連続 $a + + $b", () => {
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "$a + + $b"));
+  });
+
+  it("末尾演算子 $a +", () => {
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "$a +"));
+  });
+
+  it('指数表記 "1e3"（D4: expr.ts が明示的に拒否する構文）', () => {
+    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "1e3"));
   });
 });
 
@@ -667,8 +1018,8 @@ describe("DESCRIPTIONS", () => {
     }
   });
 
-  it("groove.face/marks.face は SPECS §4a の front 定義（幅広の加工基準面。木表そのものではない）を明記する（U-DOCSYNC）", () => {
-    for (const key of ["groove.face", "marks.face"]) {
+  it("groove.face/marks.face/hole.face は SPECS §4a の front 定義（幅広の加工基準面。木表そのものではない）を明記する（U-DOCSYNC ＋ U-SCHEMA でhole.faceを追随）", () => {
+    for (const key of ["groove.face", "marks.face", "hole.face"]) {
       const desc = DESCRIPTIONS[key];
       expect(desc, key).toContain("幅広の加工基準面");
       expect(desc, key).toContain("length × width");
@@ -677,9 +1028,14 @@ describe("DESCRIPTIONS", () => {
       // back のサポート削除・非推奨を示唆する記述を書かないこと（Supervisor 裁定済み）。
       expect(desc, key).not.toMatch(/非推奨|廃止|サポートしない|対象外/);
     }
-    // groove.face は既存の描画規約（front=実線、back=隠れ線の破線）を落としていない。
+    // 3フィールドとも既存の描画規約（front=実線、back=隠れ線の破線）を落としていない。
     expect(DESCRIPTIONS["groove.face"]).toContain("隠れ線規約");
     expect(DESCRIPTIONS["marks.face"]).toContain("隠れ線規約");
+    expect(DESCRIPTIONS["hole.face"]).toContain("隠れ線規約");
+    // hole.face は marks.face と同じ粒度（groove.face の「実線＋薄塗り」ではなく
+    // 「実線」のみ）で揃える（U-SCHEMA タスク(4)。git show a736b21 で groove/marks
+    // に付けた書きぶりのうち、marks.face 側の粒度に合わせた）。
+    expect(DESCRIPTIONS["hole.face"]).toBe(DESCRIPTIONS["marks.face"]);
   });
 
   it("marks.ref は「木口寸法」に追随し、w/h の実際の割り当ては変えていない（U-DOCSYNC）", () => {
@@ -692,5 +1048,50 @@ describe("DESCRIPTIONS", () => {
     expect(desc).toContain("thickness");
     expect(desc).toContain("実効幅");
     expect(desc).toContain("38×89");
+  });
+
+  it("U-SCHEMA: 式許可フィールドの description は式が使えることを明記する（SPECS §4b:189 の機械可読な足場）", () => {
+    const contextFreeKeys = [
+      "settings.kerf",
+      "settings.edgeTrim",
+      "stocks.length",
+      "stocks.width",
+      "stocks.thickness",
+      "parts.length",
+      "parts.width",
+      "groove.pos",
+      "groove.width",
+      "groove.depth",
+      "groove.from",
+      "groove.to",
+      "hole.x",
+      "hole.y",
+      "hole.dia",
+      "hole.depth",
+      "marks.w",
+      "marks.h",
+    ];
+    for (const key of contextFreeKeys) {
+      const desc = DESCRIPTIONS[key];
+      expect(desc, key).toContain("$vars");
+      expect(desc, key).toContain("SPECS §4d");
+    }
+    // marks.x/y は位置式（揃えエイリアス＋ミニ式）。既存のエイリアス説明に加え、
+    // $vars・ミニ式が使えることも明記する。
+    for (const key of ["marks.x", "marks.y"]) {
+      const desc = DESCRIPTIONS[key];
+      expect(desc, key).toContain("$vars");
+      expect(desc, key).toContain("SPECS §4d");
+    }
+  });
+
+  it("U-SCHEMA: vars の description は SPECS §4:156・§4d:257 の内容（共有設計値・$参照・同一ファイル内限定・位置エイリアス不可・循環/未定義エラー）を反映する", () => {
+    const desc = DESCRIPTIONS["vars"];
+    expect(desc).toContain("名前付き設計値");
+    expect(desc).toContain("$変数名");
+    expect(desc).toContain("同一ファイル内");
+    expect(desc).toContain("位置エイリアス");
+    expect(desc).toContain("循環参照");
+    expect(desc).toContain("未定義参照");
   });
 });

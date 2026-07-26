@@ -38,21 +38,52 @@
         }
       }
     },
+    "vars": {
+      "type": "object",
+      "description": "ファイル内で共有する名前付き設計値（mm）のマップ（任意区画。SPECS §4d）。値は数値または文脈非依存式の文字列（`$変数名` で同一ファイル内の他の vars を参照できる。位置エイリアス left/right/center 等は使用不可）。フィールドからは`$変数名` で参照する。同一ファイル内でのみ解決し、循環参照・未定義参照はエラーになる。変数名は [A-Za-z_][A-Za-z0-9_]* に一致しなければならない（権威は意味検証層）。",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "string",
+            "minLength": 1
+          }
+        ]
+      }
+    },
     "settings": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "kerf": {
-          "type": "number",
-          "minimum": 0,
           "default": 3,
-          "description": "鋸刃厚（mm）。割付時に切断ごとに消費される。デフォルト 3。"
+          "description": "鋸刃厚（mm）。割付時に切断ごとに消費される。デフォルト 3。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ]
         },
         "edgeTrim": {
-          "type": "number",
-          "minimum": 0,
           "default": 5,
-          "description": "原材の端の捨て代（mm）。荒れた木口を落とす分。デフォルト 5。"
+          "description": "原材の端の捨て代（mm）。荒れた木口を落とす分。デフォルト 5。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ]
         },
         "candidates": {
           "type": "integer",
@@ -140,19 +171,43 @@
             "description": "bar（1D割付・長さのみ使用）または sheet（2D割付・長さ×幅を使用）。"
           },
           "length": {
-            "type": "number",
-            "exclusiveMinimum": 0,
-            "description": "原材の長さ（mm）。"
+            "description": "原材の長さ（mm）。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+            "oneOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "string",
+                "minLength": 1
+              }
+            ]
           },
           "width": {
-            "type": "number",
-            "exclusiveMinimum": 0,
-            "description": "原材の幅（mm）。bar の場合は部材の実効幅として使われる。"
+            "description": "原材の幅（mm）。bar の場合は部材の実効幅として使われる。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+            "oneOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "string",
+                "minLength": 1
+              }
+            ]
           },
           "thickness": {
-            "type": "number",
-            "exclusiveMinimum": 0,
-            "description": "原材の厚み（mm）。"
+            "description": "原材の厚み（mm）。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+            "oneOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "string",
+                "minLength": 1
+              }
+            ]
           },
           "price": {
             "type": [
@@ -196,14 +251,30 @@
             "description": "使用する原材の id 参照。stocks の id が補完候補になる（存在しない id はここでエラーになる）。"
           },
           "length": {
-            "type": "number",
-            "exclusiveMinimum": 0,
-            "description": "部材の長さ（mm）。"
+            "description": "部材の長さ（mm）。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+            "oneOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "string",
+                "minLength": 1
+              }
+            ]
           },
           "width": {
-            "type": "number",
-            "exclusiveMinimum": 0,
-            "description": "部材の幅（mm）。bar 部材では省略可（省略時、または指定時も stock.width と同値のみ許容）。sheet 部材では必須。"
+            "description": "部材の幅（mm）。bar 部材では省略可（省略時、または指定時も stock.width と同値のみ許容）。sheet 部材では必須。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+            "oneOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "string",
+                "minLength": 1
+              }
+            ]
           },
           "rot": {
             "type": "boolean",
@@ -249,19 +320,43 @@
                       "description": "溝の走行方向。across（幅方向）または along（長さ方向）。"
                     },
                     "pos": {
-                      "type": "number",
-                      "minimum": 0,
-                      "description": "基準端（部材ローカル原点側の端）から溝中心までの距離（mm）。across は左端からの X 座標、along は下端からの Y 座標。寸法線抽出でも中心基準として扱う。"
+                      "description": "基準端（部材ローカル原点側の端）から溝中心までの距離（mm）。across は左端からの X 座標、along は下端からの Y 座標。寸法線抽出でも中心基準として扱う。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     },
                     "width": {
-                      "type": "number",
-                      "exclusiveMinimum": 0,
-                      "description": "溝幅（mm）。"
+                      "description": "溝幅（mm）。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     },
                     "depth": {
-                      "type": "number",
-                      "exclusiveMinimum": 0,
-                      "description": "溝深さ（mm）。stock.thickness 以下でなければならない（意味検証層）。"
+                      "description": "溝深さ（mm）。stock.thickness 以下でなければならない（意味検証層）。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     },
                     "end": {
                       "enum": [
@@ -271,14 +366,30 @@
                       "description": "through（通し）または stopped（止め、止めの場合 from/to を追加）。"
                     },
                     "from": {
-                      "type": "number",
-                      "minimum": 0,
-                      "description": "end: stopped の場合のみ使用する、走行軸上の絶対座標（mm）の開始側。across では下端からの Y 座標、along では左端からの X 座標とし、0 ≤ from < to ≤ 走行軸の面寸法（across は実効幅、along は部材長）を満たす。end: through への from/to 併記はエラー。"
+                      "description": "end: stopped の場合のみ使用する、走行軸上の絶対座標（mm）の開始側。across では下端からの Y 座標、along では左端からの X 座標とし、0 ≤ from < to ≤ 走行軸の面寸法（across は実効幅、along は部材長）を満たす。end: through への from/to 併記はエラー。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     },
                     "to": {
-                      "type": "number",
-                      "minimum": 0,
-                      "description": "end: stopped の場合のみ使用する、走行軸上の絶対座標（mm）の終了側。across では下端からの Y 座標、along では左端からの X 座標とし、0 ≤ from < to ≤ 走行軸の面寸法（across は実効幅、along は部材長）を満たす。end: through への from/to 併記はエラー。"
+                      "description": "end: stopped の場合のみ使用する、走行軸上の絶対座標（mm）の終了側。across では下端からの Y 座標、along では左端からの X 座標とし、0 ≤ from < to ≤ 走行軸の面寸法（across は実効幅、along は部材長）を満たす。end: through への from/to 併記はエラー。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     }
                   }
                 },
@@ -302,30 +413,62 @@
                         "front",
                         "back"
                       ],
-                      "description": "加工面。front または back。"
+                      "description": "加工面。front は木表・木裏を区別しない幅広の加工基準面（length × width。完成品の世界座標における正面や、樹皮側を意味する木表そのものではない）。面内座標系は左下原点・X右・Y上で、X は length 方向、Y は width 方向。front は実線、back はその対向面を front の加工指示図カード上に破線（隠れ線規約）で投影して描画する。"
                     },
                     "x": {
-                      "type": "number",
-                      "minimum": 0,
-                      "description": "部材ローカル座標系での中心 X 座標（mm）。"
+                      "description": "部材ローカル座標系での中心 X 座標（mm）。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     },
                     "y": {
-                      "type": "number",
-                      "minimum": 0,
-                      "description": "部材ローカル座標系での中心 Y 座標（mm）。"
+                      "description": "部材ローカル座標系での中心 Y 座標（mm）。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     },
                     "dia": {
-                      "type": "number",
-                      "exclusiveMinimum": 0,
-                      "description": "径（mm）。"
+                      "description": "径（mm）。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     },
                     "depth": {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "exclusiveMinimum": 0,
-                      "description": "深さ（mm）。省略時は貫通を表す。"
+                      "description": "深さ（mm）。省略時は貫通を表す。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+                      "oneOf": [
+                        {
+                          "type": [
+                            "number",
+                            "null"
+                          ],
+                          "exclusiveMinimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     }
                   }
                 }
@@ -392,35 +535,29 @@
                     },
                     "x": {
                       "default": 0,
-                      "description": "マーク領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。数値の代わりに端揃えエイリアス \"left\"（0）/ \"right\"（part.length − w。w はrot 適用後の値）/ \"center\"（矩形領域では (part.length − w) / 2。w は rot 適用後の値。領域全体を中央に揃えるための解決規則であり、軸長の 1/2 ではないことに注意）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決（このエイリアスが参照する w は rot 適用後の値）。hole の x（中心基準）とは基準が異なるので注意すること。",
+                      "description": "マーク領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。数値の代わりに端揃えエイリアス \"left\"（0）/ \"right\"（part.length − w。w はrot 適用後の値）/ \"center\"（矩形領域では (part.length − w) / 2。w は rot 適用後の値。領域全体を中央に揃えるための解決規則であり、軸長の 1/2 ではないことに注意）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決（このエイリアスが参照する w は rot 適用後の値）。hole の x（中心基準）とは基準が異なるので注意すること。端揃え・中央揃えエイリアスに加え、`$vars` 参照や `+`/`-` のみのミニ式文字列（例: \"right - 40\"。SPECS §4d）も指定できる。",
                       "oneOf": [
                         {
                           "type": "number",
                           "minimum": 0
                         },
                         {
-                          "enum": [
-                            "left",
-                            "right",
-                            "center"
-                          ]
+                          "type": "string",
+                          "minLength": 1
                         }
                       ]
                     },
                     "y": {
                       "default": 0,
-                      "description": "マーク領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。数値の代わりに端揃えエイリアス \"bottom\"（0）/ \"top\"（実効幅 − h。h はrot 適用後の値）/ \"center\"（矩形領域では (実効幅 − h) / 2。h は rot 適用後の値。領域全体を中央に揃えるための解決規則であり、軸長の 1/2 ではないことに注意）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決（このエイリアスが参照する h は rot 適用後の値）。hole の y（中心基準）とは基準が異なるので注意すること。",
+                      "description": "マーク領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。数値の代わりに端揃えエイリアス \"bottom\"（0）/ \"top\"（実効幅 − h。h はrot 適用後の値）/ \"center\"（矩形領域では (実効幅 − h) / 2。h は rot 適用後の値。領域全体を中央に揃えるための解決規則であり、軸長の 1/2 ではないことに注意）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決（このエイリアスが参照する h は rot 適用後の値）。hole の y（中心基準）とは基準が異なるので注意すること。端揃え・中央揃えエイリアスに加え、`$vars` 参照や `+`/`-` のみのミニ式文字列（例: \"right - 40\"。SPECS §4d）も指定できる。",
                       "oneOf": [
                         {
                           "type": "number",
                           "minimum": 0
                         },
                         {
-                          "enum": [
-                            "bottom",
-                            "top",
-                            "center"
-                          ]
+                          "type": "string",
+                          "minLength": 1
                         }
                       ]
                     },
@@ -463,35 +600,29 @@
                     },
                     "x": {
                       "default": 0,
-                      "description": "マーク領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。数値の代わりに端揃えエイリアス \"left\"（0）/ \"right\"（part.length − w。w はrot 適用後の値）/ \"center\"（矩形領域では (part.length − w) / 2。w は rot 適用後の値。領域全体を中央に揃えるための解決規則であり、軸長の 1/2 ではないことに注意）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決（このエイリアスが参照する w は rot 適用後の値）。hole の x（中心基準）とは基準が異なるので注意すること。",
+                      "description": "マーク領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。数値の代わりに端揃えエイリアス \"left\"（0）/ \"right\"（part.length − w。w はrot 適用後の値）/ \"center\"（矩形領域では (part.length − w) / 2。w は rot 適用後の値。領域全体を中央に揃えるための解決規則であり、軸長の 1/2 ではないことに注意）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決（このエイリアスが参照する w は rot 適用後の値）。hole の x（中心基準）とは基準が異なるので注意すること。端揃え・中央揃えエイリアスに加え、`$vars` 参照や `+`/`-` のみのミニ式文字列（例: \"right - 40\"。SPECS §4d）も指定できる。",
                       "oneOf": [
                         {
                           "type": "number",
                           "minimum": 0
                         },
                         {
-                          "enum": [
-                            "left",
-                            "right",
-                            "center"
-                          ]
+                          "type": "string",
+                          "minLength": 1
                         }
                       ]
                     },
                     "y": {
                       "default": 0,
-                      "description": "マーク領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。数値の代わりに端揃えエイリアス \"bottom\"（0）/ \"top\"（実効幅 − h。h はrot 適用後の値）/ \"center\"（矩形領域では (実効幅 − h) / 2。h は rot 適用後の値。領域全体を中央に揃えるための解決規則であり、軸長の 1/2 ではないことに注意）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決（このエイリアスが参照する h は rot 適用後の値）。hole の y（中心基準）とは基準が異なるので注意すること。",
+                      "description": "マーク領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。数値の代わりに端揃えエイリアス \"bottom\"（0）/ \"top\"（実効幅 − h。h はrot 適用後の値）/ \"center\"（矩形領域では (実効幅 − h) / 2。h は rot 適用後の値。領域全体を中央に揃えるための解決規則であり、軸長の 1/2 ではないことに注意）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決（このエイリアスが参照する h は rot 適用後の値）。hole の y（中心基準）とは基準が異なるので注意すること。端揃え・中央揃えエイリアスに加え、`$vars` 参照や `+`/`-` のみのミニ式文字列（例: \"right - 40\"。SPECS §4d）も指定できる。",
                       "oneOf": [
                         {
                           "type": "number",
                           "minimum": 0
                         },
                         {
-                          "enum": [
-                            "bottom",
-                            "top",
-                            "center"
-                          ]
+                          "type": "string",
+                          "minLength": 1
                         }
                       ]
                     },
@@ -508,14 +639,30 @@
                       "description": "図に添える注記（例: \"足当たり面\"）。省略可。"
                     },
                     "w": {
-                      "type": "number",
-                      "exclusiveMinimum": 0,
-                      "description": "マーク領域の幅（mm、X 方向）。h とセットで指定する。ref とは排他（併記も、ref・w/h ともに無いのも error）。rot: 90 を指定すると h と入れ替わる（rot は w/h 直接指定にも一様に適用される）。"
+                      "description": "マーク領域の幅（mm、X 方向）。h とセットで指定する。ref とは排他（併記も、ref・w/h ともに無いのも error）。rot: 90 を指定すると h と入れ替わる（rot は w/h 直接指定にも一様に適用される）。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     },
                     "h": {
-                      "type": "number",
-                      "exclusiveMinimum": 0,
-                      "description": "マーク領域の高さ（mm、Y 方向）。w とセットで指定する。ref とは排他（併記も、ref・w/h ともに無いのも error）。rot: 90 を指定すると w と入れ替わる（rot は w/h 直接指定にも一様に適用される）。"
+                      "description": "マーク領域の高さ（mm、Y 方向）。w とセットで指定する。ref とは排他（併記も、ref・w/h ともに無いのも error）。rot: 90 を指定すると w と入れ替わる（rot は w/h 直接指定にも一様に適用される）。数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: \"$inset + 10\"。SPECS §4d）も指定できる。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      ]
                     }
                   }
                 }

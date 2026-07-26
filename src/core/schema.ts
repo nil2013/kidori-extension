@@ -35,6 +35,54 @@ export const DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema";
 export const ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._-]*$";
 
 /**
+ * 式を受け付けるフィールドの description に付け足す定型文（SPECS.md §4d。
+ * U-SCHEMA）。単一ソースとして再利用し、表現を統一する。
+ *
+ * `pattern` は書かない（後述）。この定型文だけが、式が使えることをエディタの
+ * ホバー・補完に伝える唯一の経路になる。
+ *
+ * 文脈非依存式（vars.*・hole.*・groove.* 等。揃えエイリアス不可）用。
+ */
+const EXPR_HINT_CONTEXT_FREE =
+  '数値のほか、`$vars` 参照と `+`/`-` のみのミニ式文字列（例: "$inset + 10"。SPECS §4d）も指定できる。';
+
+/**
+ * 位置式（marks[].x / marks[].y のみ。揃えエイリアスを式中に使える）用。
+ */
+const EXPR_HINT_POSITIONAL =
+  '端揃え・中央揃えエイリアスに加え、`$vars` 参照や `+`/`-` のみのミニ式文字列' +
+  '（例: "right - 40"。SPECS §4d）も指定できる。';
+
+/**
+ * 式を受け付ける数値フィールドの `oneOf` サブスキーマを組み立てる（U-SCHEMA）。
+ *
+ * `src/core/expr.ts` の `EXPR_FIELD_CAPABILITIES` を単一ソースとし、SPECS.md
+ * §4d:244「文脈非依存式を受け付けるフィールド」を数値ブランチ＋文字列ブランチの
+ * `oneOf` として表現する。
+ *
+ * - 数値ブランチの制約（`minimum`/`exclusiveMinimum` 等）は**維持する**
+ *   （Supervisor 裁定 D1。リテラル値の層1診断を退行させないため）。
+ * - 文字列ブランチは `type: "string"` のみ（Supervisor 裁定 D2。文法・字句の
+ *   権威は層2の式パーサに置く。層1はここで「文字列である」ことしか縛らない）。
+ * - `pattern` は付けない（このモジュール冒頭のコメント、および報告を参照）。
+ *
+ * `numberSchema` に `type` を含めないこと（呼び出し側が `minimum` 等の制約のみを
+ * 渡し、本関数が `type: "number"` を補う）。
+ */
+function exprField(
+  numberConstraints: Record<string, unknown>,
+  description: string,
+): Record<string, unknown> {
+  return {
+    description,
+    oneOf: [
+      { type: "number", ...numberConstraints },
+      { type: "string", minLength: 1 },
+    ],
+  };
+}
+
+/**
  * 各フィールドの説明文（日本語、SPECS.md §4 の定義文をそのまま採用）。
  * schema 組み立てはすべてこの辞書を参照し、description を二重管理しない。
  */
@@ -43,8 +91,10 @@ export const DESCRIPTIONS: Record<string, string> = {
   "meta.units": "単位。mm 固定（他の値は loader の意味検証で error になる）。",
   "meta.schemaVersion":
     "正本のスキーマバージョン表記。想定バージョンと不一致の場合はloader が warning を出す。",
-  "settings.kerf": "鋸刃厚（mm）。割付時に切断ごとに消費される。デフォルト 3。",
-  "settings.edgeTrim": "原材の端の捨て代（mm）。荒れた木口を落とす分。デフォルト 5。",
+  "settings.kerf":
+    `鋸刃厚（mm）。割付時に切断ごとに消費される。デフォルト 3。${EXPR_HINT_CONTEXT_FREE}`,
+  "settings.edgeTrim":
+    `原材の端の捨て代（mm）。荒れた木口を落とす分。デフォルト 5。${EXPR_HINT_CONTEXT_FREE}`,
   "settings.candidates":
     "生成する割付候補数（デフォルト 3）。1〜3 にクランプされる（4 以上の指定は loader が warning を出す）。",
   "settings.rank":
@@ -69,9 +119,10 @@ export const DESCRIPTIONS: Record<string, string> = {
     "（正本の自己完結性を維持）。マスタへの追従をやめたいときはキーを消すだけでよい。",
   "stocks.label": '表示ラベル（例: "1×4材 6F"）。',
   "stocks.kind": "bar（1D割付・長さのみ使用）または sheet（2D割付・長さ×幅を使用）。",
-  "stocks.length": "原材の長さ（mm）。",
-  "stocks.width": "原材の幅（mm）。bar の場合は部材の実効幅として使われる。",
-  "stocks.thickness": "原材の厚み（mm）。",
+  "stocks.length": `原材の長さ（mm）。${EXPR_HINT_CONTEXT_FREE}`,
+  "stocks.width":
+    `原材の幅（mm）。bar の場合は部材の実効幅として使われる。${EXPR_HINT_CONTEXT_FREE}`,
+  "stocks.thickness": `原材の厚み（mm）。${EXPR_HINT_CONTEXT_FREE}`,
   "stocks.price": "単価（円）。省略可。省略時は費用計算で price 欠落として扱われる。",
   "parts.id":
     "部材 ID。出力ファイル名（<stem>.out/parts/{id}.svg）に使われるため、" +
@@ -83,10 +134,10 @@ export const DESCRIPTIONS: Record<string, string> = {
     "必要数を導出できないため error になる。",
   "parts.stock":
     "使用する原材の id 参照。stocks の id が補完候補になる（存在しない id はここでエラーになる）。",
-  "parts.length": "部材の長さ（mm）。",
+  "parts.length": `部材の長さ（mm）。${EXPR_HINT_CONTEXT_FREE}`,
   "parts.width":
     "部材の幅（mm）。bar 部材では省略可（省略時、または指定時も stock.width と同値のみ許容）。" +
-    "sheet 部材では必須。",
+    `sheet 部材では必須。${EXPR_HINT_CONTEXT_FREE}`,
   "parts.rot":
     "2D割付時の90度回転可否。デフォルト true。木目を通したい部材は false。" +
     "bar 部材では意味を持たない（指定すると loader が warning を出す）。",
@@ -101,25 +152,32 @@ export const DESCRIPTIONS: Record<string, string> = {
   "groove.dir": "溝の走行方向。across（幅方向）または along（長さ方向）。",
   "groove.pos":
     "基準端（部材ローカル原点側の端）から溝中心までの距離（mm）。" +
-    "across は左端からの X 座標、along は下端からの Y 座標。寸法線抽出でも中心基準として扱う。",
-  "groove.width": "溝幅（mm）。",
-  "groove.depth": "溝深さ（mm）。stock.thickness 以下でなければならない（意味検証層）。",
+    "across は左端からの X 座標、along は下端からの Y 座標。寸法線抽出でも中心基準として扱う。" +
+    EXPR_HINT_CONTEXT_FREE,
+  "groove.width": `溝幅（mm）。${EXPR_HINT_CONTEXT_FREE}`,
+  "groove.depth":
+    `溝深さ（mm）。stock.thickness 以下でなければならない（意味検証層）。${EXPR_HINT_CONTEXT_FREE}`,
   "groove.end": "through（通し）または stopped（止め、止めの場合 from/to を追加）。",
   "groove.from":
     "end: stopped の場合のみ使用する、走行軸上の絶対座標（mm）の開始側。" +
     "across では下端からの Y 座標、along では左端からの X 座標とし、" +
     "0 ≤ from < to ≤ 走行軸の面寸法（across は実効幅、along は部材長）を満たす。" +
-    "end: through への from/to 併記はエラー。",
+    `end: through への from/to 併記はエラー。${EXPR_HINT_CONTEXT_FREE}`,
   "groove.to":
     "end: stopped の場合のみ使用する、走行軸上の絶対座標（mm）の終了側。" +
     "across では下端からの Y 座標、along では左端からの X 座標とし、" +
     "0 ≤ from < to ≤ 走行軸の面寸法（across は実効幅、along は部材長）を満たす。" +
-    "end: through への from/to 併記はエラー。",
-  "hole.face": "加工面。front または back。",
-  "hole.x": "部材ローカル座標系での中心 X 座標（mm）。",
-  "hole.y": "部材ローカル座標系での中心 Y 座標（mm）。",
-  "hole.dia": "径（mm）。",
-  "hole.depth": "深さ（mm）。省略時は貫通を表す。",
+    `end: through への from/to 併記はエラー。${EXPR_HINT_CONTEXT_FREE}`,
+  "hole.face":
+    "加工面。front は木表・木裏を区別しない幅広の加工基準面（length × width。" +
+    "完成品の世界座標における正面や、樹皮側を意味する木表そのものではない）。" +
+    "面内座標系は左下原点・X右・Y上で、X は length 方向、Y は width 方向。" +
+    "front は実線、back はその対向面を front の加工指示図カード上に破線" +
+    "（隠れ線規約）で投影して描画する。",
+  "hole.x": `部材ローカル座標系での中心 X 座標（mm）。${EXPR_HINT_CONTEXT_FREE}`,
+  "hole.y": `部材ローカル座標系での中心 Y 座標（mm）。${EXPR_HINT_CONTEXT_FREE}`,
+  "hole.dia": `径（mm）。${EXPR_HINT_CONTEXT_FREE}`,
+  "hole.depth": `深さ（mm）。省略時は貫通を表す。${EXPR_HINT_CONTEXT_FREE}`,
   assemblies:
     "構成グルーピング（任意区画）。「どの形状の部材が何個でひと組か」の宣言と、" +
     "取り付けシロ（marks）を置く。割付は導出後の合計数だけを見るため、" +
@@ -150,7 +208,8 @@ export const DESCRIPTIONS: Record<string, string> = {
     "の値。領域全体を中央に揃えるための解決規則であり、軸長の 1/2 ではないことに" +
     "注意）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決" +
     "（このエイリアスが参照する w は rot 適用後の値）。" +
-    "hole の x（中心基準）とは基準が異なるので注意すること。",
+    "hole の x（中心基準）とは基準が異なるので注意すること。" +
+    EXPR_HINT_POSITIONAL,
   "marks.y":
     "マーク領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。" +
     '数値の代わりに端揃えエイリアス "bottom"（0）/ "top"（実効幅 − h。h は' +
@@ -158,15 +217,16 @@ export const DESCRIPTIONS: Record<string, string> = {
     "領域全体を中央に揃えるための解決規則であり、軸長の 1/2 ではないことに注意）も" +
     "指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決" +
     "（このエイリアスが参照する h は rot 適用後の値）。" +
-    "hole の y（中心基準）とは基準が異なるので注意すること。",
+    "hole の y（中心基準）とは基準が異なるので注意すること。" +
+    EXPR_HINT_POSITIONAL,
   "marks.w":
     "マーク領域の幅（mm、X 方向）。h とセットで指定する。ref とは排他" +
     "（併記も、ref・w/h ともに無いのも error）。rot: 90 を指定すると h と入れ替わる" +
-    "（rot は w/h 直接指定にも一様に適用される）。",
+    `（rot は w/h 直接指定にも一様に適用される）。${EXPR_HINT_CONTEXT_FREE}`,
   "marks.h":
     "マーク領域の高さ（mm、Y 方向）。w とセットで指定する。ref とは排他" +
     "（併記も、ref・w/h ともに無いのも error）。rot: 90 を指定すると w と入れ替わる" +
-    "（rot は w/h 直接指定にも一様に適用される）。",
+    `（rot は w/h 直接指定にも一様に適用される）。${EXPR_HINT_CONTEXT_FREE}`,
   "marks.ref":
     "相手形状（parts[].id）の木口寸法（width × thickness）から領域寸法を導出する。" +
     "w = 相手形状が使う原材の thickness、h = 相手形状の実効幅（bar なら原材幅、" +
@@ -182,6 +242,12 @@ export const DESCRIPTIONS: Record<string, string> = {
     "エイリアス解決であり、エイリアスが参照する w/h は rot 適用後の値。矩形領域では" +
     "180/270 は 0/90 と同値のため 2 値で足りる。",
   "marks.note": '図に添える注記（例: "足当たり面"）。省略可。',
+  vars:
+    "ファイル内で共有する名前付き設計値（mm）のマップ（任意区画。SPECS §4d）。" +
+    '値は数値または文脈非依存式の文字列（`$変数名` で同一ファイル内の他の vars を' +
+    "参照できる。位置エイリアス left/right/center 等は使用不可）。フィールドからは" +
+    "`$変数名` で参照する。同一ファイル内でのみ解決し、循環参照・未定義参照はエラーになる。" +
+    "変数名は [A-Za-z_][A-Za-z0-9_]* に一致しなければならない（権威は意味検証層）。",
 };
 
 function grooveSchema(): Record<string, unknown> {
@@ -193,20 +259,12 @@ function grooveSchema(): Record<string, unknown> {
       type: { const: "groove", description: DESCRIPTIONS["features.type"] },
       face: { enum: ["front", "back"], description: DESCRIPTIONS["groove.face"] },
       dir: { enum: ["across", "along"], description: DESCRIPTIONS["groove.dir"] },
-      pos: { type: "number", minimum: 0, description: DESCRIPTIONS["groove.pos"] },
-      width: {
-        type: "number",
-        exclusiveMinimum: 0,
-        description: DESCRIPTIONS["groove.width"],
-      },
-      depth: {
-        type: "number",
-        exclusiveMinimum: 0,
-        description: DESCRIPTIONS["groove.depth"],
-      },
+      pos: exprField({ minimum: 0 }, DESCRIPTIONS["groove.pos"]),
+      width: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["groove.width"]),
+      depth: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["groove.depth"]),
       end: { enum: ["through", "stopped"], description: DESCRIPTIONS["groove.end"] },
-      from: { type: "number", minimum: 0, description: DESCRIPTIONS["groove.from"] },
-      to: { type: "number", minimum: 0, description: DESCRIPTIONS["groove.to"] },
+      from: exprField({ minimum: 0 }, DESCRIPTIONS["groove.from"]),
+      to: exprField({ minimum: 0 }, DESCRIPTIONS["groove.to"]),
     },
   };
 }
@@ -219,13 +277,17 @@ function holeSchema(): Record<string, unknown> {
     properties: {
       type: { const: "hole", description: DESCRIPTIONS["features.type"] },
       face: { enum: ["front", "back"], description: DESCRIPTIONS["hole.face"] },
-      x: { type: "number", minimum: 0, description: DESCRIPTIONS["hole.x"] },
-      y: { type: "number", minimum: 0, description: DESCRIPTIONS["hole.y"] },
-      dia: { type: "number", exclusiveMinimum: 0, description: DESCRIPTIONS["hole.dia"] },
+      x: exprField({ minimum: 0 }, DESCRIPTIONS["hole.x"]),
+      y: exprField({ minimum: 0 }, DESCRIPTIONS["hole.y"]),
+      dia: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["hole.dia"]),
+      // depth は省略可（貫通の意味で null）。数値ブランチに "null" を含めるのは
+      // exprField の型（number 固定）に合わないため、ここだけ手組みの oneOf にする。
       depth: {
-        type: ["number", "null"],
-        exclusiveMinimum: 0,
         description: DESCRIPTIONS["hole.depth"],
+        oneOf: [
+          { type: ["number", "null"], exclusiveMinimum: 0 },
+          { type: "string", minLength: 1 },
+        ],
       },
     },
   };
@@ -239,6 +301,15 @@ function holeSchema(): Record<string, unknown> {
  * （併記は一致0件になり、エディタ上でも即座に赤線になる）。
  * 排他規則の権威は層2（意味検証）にある（parts[].stock の enum と
  * checkStockReferences の関係と同じ役割分担）。
+ *
+ * `x`/`y`（U-SCHEMA）: 位置式（SPECS.md §4d:245）を許すため `oneOf: [number, string]`
+ * とする。**端揃え・中央揃えエイリアス（"left"/"right"/"center" 等）専用の enum
+ * ブランチはあえて置かない**: `oneOf` は「ちょうど1件に一致」を要求するため、
+ * `enum: [...]` ブランチと汎用 `type: "string"` ブランチを両方持つと、エイリアス
+ * 文字列がその両方に一致してしまい `matched !== 1` で逆に弾かれる（D3 で実機確認
+ * 済み。報告参照）。したがってエイリアスは汎用文字列ブランチに包含させ、
+ * 「"middle" 等の未知エイリアスを層1で拒否できない」という既定の緩和を受け入れる
+ * （権威は層2の式パーサへ移る。SPECS.md §4d の対応表参照）。
  */
 function markSchema(): Record<string, unknown> {
   const common = {
@@ -246,13 +317,11 @@ function markSchema(): Record<string, unknown> {
     face: { enum: ["front", "back"], description: DESCRIPTIONS["marks.face"] },
     x: {
       default: 0,
-      description: DESCRIPTIONS["marks.x"],
-      oneOf: [{ type: "number", minimum: 0 }, { enum: ["left", "right", "center"] }],
+      ...exprField({ minimum: 0 }, DESCRIPTIONS["marks.x"]),
     },
     y: {
       default: 0,
-      description: DESCRIPTIONS["marks.y"],
-      oneOf: [{ type: "number", minimum: 0 }, { enum: ["bottom", "top", "center"] }],
+      ...exprField({ minimum: 0 }, DESCRIPTIONS["marks.y"]),
     },
     rot: {
       enum: [0, 90],
@@ -282,16 +351,8 @@ function markSchema(): Record<string, unknown> {
         required: ["on", "face"],
         properties: {
           ...common,
-          w: {
-            type: "number",
-            exclusiveMinimum: 0,
-            description: DESCRIPTIONS["marks.w"],
-          },
-          h: {
-            type: "number",
-            exclusiveMinimum: 0,
-            description: DESCRIPTIONS["marks.h"],
-          },
+          w: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["marks.w"]),
+          h: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["marks.h"]),
         },
       },
     ],
@@ -343,21 +404,10 @@ function stockSchema(): Record<string, unknown> {
       },
       label: { type: "string", description: DESCRIPTIONS["stocks.label"] },
       kind: { enum: ["bar", "sheet"], description: DESCRIPTIONS["stocks.kind"] },
-      length: {
-        type: "number",
-        exclusiveMinimum: 0,
-        description: DESCRIPTIONS["stocks.length"],
-      },
-      width: {
-        type: "number",
-        exclusiveMinimum: 0,
-        description: DESCRIPTIONS["stocks.width"],
-      },
-      thickness: {
-        type: "number",
-        exclusiveMinimum: 0,
-        description: DESCRIPTIONS["stocks.thickness"],
-      },
+      length: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["stocks.length"]),
+      width: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["stocks.width"]),
+      thickness: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["stocks.thickness"]),
+      // price は§4d:246 によりリテラル限定（式不可）。number|string の union にしない。
       price: {
         type: ["number", "null"],
         minimum: 0,
@@ -386,22 +436,16 @@ function partSchema(stockIds: readonly string[]): Record<string, unknown> {
     properties: {
       id: { type: "string", pattern: ID_PATTERN, description: DESCRIPTIONS["parts.id"] },
       label: { type: "string", description: DESCRIPTIONS["parts.label"] },
+      // qty は§4d:246 によりリテラル限定（式不可）。number|string の union にしない。
       qty: {
         type: "integer",
         exclusiveMinimum: 0,
         description: DESCRIPTIONS["parts.qty"],
       },
       stock: stockProp,
-      length: {
-        type: "number",
-        exclusiveMinimum: 0,
-        description: DESCRIPTIONS["parts.length"],
-      },
-      width: {
-        type: "number",
-        exclusiveMinimum: 0,
-        description: DESCRIPTIONS["parts.width"],
-      },
+      length: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["parts.length"]),
+      width: exprField({ exclusiveMinimum: 0 }, DESCRIPTIONS["parts.width"]),
+      // rot は§4d:246 によりリテラル限定（式不可）。
       rot: { type: "boolean", default: true, description: DESCRIPTIONS["parts.rot"] },
       features: {
         type: "array",
@@ -457,22 +501,30 @@ export function buildSchema(stockIds: readonly string[]): Record<string, unknown
           },
         },
       },
+      vars: {
+        type: "object",
+        description: DESCRIPTIONS["vars"],
+        // キー（変数名）のパターン検証（[A-Za-z_][A-Za-z0-9_]*）はこの最小バリデータが
+        // patternProperties 相当を解釈しないため層1では効かない。権威は層2（U-PIPE。
+        // src/core/expr.ts の resolveVars が VAR_NAME_RE で検証する）。層1は値の型
+        // （number | 文脈非依存式の文字列）のみを縛る。
+        additionalProperties: {
+          oneOf: [{ type: "number" }, { type: "string", minLength: 1 }],
+        },
+      },
       settings: {
         type: "object",
         additionalProperties: false,
         properties: {
           kerf: {
-            type: "number",
-            minimum: 0,
             default: 3.0,
-            description: DESCRIPTIONS["settings.kerf"],
+            ...exprField({ minimum: 0 }, DESCRIPTIONS["settings.kerf"]),
           },
           edgeTrim: {
-            type: "number",
-            minimum: 0,
             default: 5.0,
-            description: DESCRIPTIONS["settings.edgeTrim"],
+            ...exprField({ minimum: 0 }, DESCRIPTIONS["settings.edgeTrim"]),
           },
+          // candidates は§4d:246 によりリテラル限定（式不可）。
           candidates: {
             type: "integer",
             default: 3,
