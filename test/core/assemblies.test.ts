@@ -49,7 +49,7 @@ assemblies:
     label: ウマ2号機（互い違いに噛み合う側）
     contains: { leg: 2, beam-top: 1, beam-foot: 1 }
     marks:
-      - { on: beam-top, face: front, ref: leg, x: 120, note: 足当たり面 }
+      - { on: beam-top, face: front, ref: leg, rot: 90, x: 120, y: top, note: 足当たり面 }
 `;
 
 /** bar 材1本＋sheet 材1枚と3形状からなる、物理的に整合する raw プロジェクト。 */
@@ -146,9 +146,128 @@ describe("SPECS.md §4c の例 YAML", () => {
 
     expect(variants.map((v) => v.stem)).toEqual(["uma-1-beam-top", "uma-2-beam-top"]);
     expect(variants[0].marks[0].x).toBe(50);
-    expect(variants[1].marks[0].x).toBe(120);
+    // uma-2 は rot: 90 + y: top（SPECS.md §4c の更新後の例そのもの）。
+    // rot: 90 で (w, h) = (38, 89) → (89, 38) に入れ替わり、
+    // y: top は beam-top の実効幅（bar なので stock.width = 89）から h を引いた
+    // 89 − 38 = 51 に解決される。
+    expect(variants[1].marks[0]).toMatchObject({ x: 120, y: 51, w: 89, h: 38, rot: 90 });
     // マークを持たない形状は変種面にならない（従来どおり形状ごとに1面）。
     expect(variants.every((v) => v.part.id === "beam-top")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rot（当たり面の面内回転）・x/y の端揃えエイリアス（SPECS.md §4c v0.7 追記）
+// ---------------------------------------------------------------------------
+
+describe("v0.7: marks の rot と端揃えエイリアス", () => {
+  it("解決順序の証拠: 同じマークで rot だけを 0/90 に変えると y: top の解決値が変わる", () => {
+    // beam-top（2×4、実効幅89）に leg（2×4、厚み38×幅89）を ref する。
+    // rot: 0 なら (w, h) = (38, 89) → y: top は 89 − 89 = 0。
+    // rot: 90 なら (w, h) = (89, 38) → y: top は 89 − 38 = 51。
+    // これは D1（ref 導出 → rot 適用 → エイリアス解決の順序）を守っていなければ
+    // 再現できない結果である（順序を誤ると rot が y の解決に影響しなくなる）。
+    for (const [rot, expectedY] of [
+      [0, 0],
+      [90, 51],
+    ] as const) {
+      const raw = baseRaw();
+      raw.assemblies = [
+        {
+          id: "asm",
+          contains: { leg: 1, "beam-top": 1 },
+          marks: [{ on: "beam-top", face: "front", ref: "leg", rot, y: "top" }],
+        },
+      ];
+      const { project, issues } = load(raw);
+
+      expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+      const mark = resolveMarks(project!, project!.assemblies[0])[0];
+      expect(mark.y).toBe(expectedY);
+      expect(mark.rot).toBe(rot);
+    }
+  });
+
+  it("4方向の端揃えエイリアス（left/right/bottom/top）がそれぞれ解決される", () => {
+    // beam-top: length 850、実効幅 89（bar なので stock.width）。
+    // ref: leg（rot なし）→ (w, h) = (38, 89)。
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [
+          { on: "beam-top", face: "front", ref: "leg", x: "left", y: "bottom" },
+          { on: "beam-top", face: "front", ref: "leg", x: "right", y: "top" },
+        ],
+      },
+    ];
+    const { project, issues } = load(raw);
+
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+    const marks = resolveMarks(project!, project!.assemblies[0]);
+
+    expect(marks[0]).toMatchObject({ x: 0, y: 0 }); // left → 0, bottom → 0
+    // right → part.length(850) − w(38) = 812。top → effectiveWidth(89) − h(89) = 0。
+    expect(marks[1]).toMatchObject({ x: 812, y: 0 });
+  });
+
+  it("rot は w/h 直接指定にも一様に適用される（swap）", () => {
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", w: 40, h: 20, rot: 90 }],
+      },
+    ];
+    const { project, issues } = load(raw);
+
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+    const mark = resolveMarks(project!, project!.assemblies[0])[0];
+    // rot: 90 は w/h 直接指定であっても入れ替える（D2）。
+    expect(mark.w).toBe(20);
+    expect(mark.h).toBe(40);
+  });
+
+  it("rot 省略時・エイリアス不使用時は従来と同一の結果になる（既存挙動の保存）", () => {
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", ref: "leg", x: 50 }],
+      },
+    ];
+    const { project } = load(raw);
+    const mark = resolveMarks(project!, project!.assemblies[0])[0];
+
+    expect(mark).toEqual({
+      on: "beam-top",
+      face: "front",
+      x: 50,
+      y: 0,
+      w: 38,
+      h: 89,
+      rot: 0,
+      ref: "leg",
+      note: null,
+    });
+  });
+
+  it("rot に 0/90 以外の値（例: 45）を指定すると error になる", () => {
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", w: 40, h: 20, rot: 45 }],
+      },
+    ];
+    const { project, issues } = load(raw);
+
+    expect(project).toBeNull();
+    expect(issues.some((i) => i.severity === "error")).toBe(true);
   });
 });
 
@@ -539,6 +658,7 @@ describe("v0.7: marks の解決（resolveMarks）", () => {
       y: 0,
       w: 40,
       h: 20,
+      rot: 0,
       ref: null,
       note: "当たり",
     });

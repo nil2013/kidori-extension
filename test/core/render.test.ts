@@ -710,6 +710,7 @@ function makeMark(overrides: Partial<ResolvedMark> = {}): ResolvedMark {
     y: 0,
     w: 38,
     h: 89,
+    rot: 0,
     ref: "leg",
     note: "足当たり面",
     ...overrides,

@@ -534,11 +534,34 @@ describe("DESCRIPTIONS", () => {
     expect(desc).toContain("実効幅");
     expect(desc).toContain("38×89");
     expect(desc).toContain("排他");
-    // 回転接触は w/h の直接指定で書く（rotated 等の拡張は設けない）。
+    // 回転接触は rot: 90 で表す（v0.7 で仕様化。w/h 直接指定に頼る記述は残さない）。
     expect(desc).toContain("90°");
+    expect(desc).toContain("rot: 90");
     for (const key of ["marks.w", "marks.h"]) {
       expect(DESCRIPTIONS[key], key).toContain("排他");
     }
+  });
+
+  it("marks.rot は解決順序（ref → rot → エイリアス）と rot 適用後の w/h を明記する（v0.7）", () => {
+    const desc = DESCRIPTIONS["marks.rot"];
+    expect(desc).toContain("0");
+    expect(desc).toContain("90");
+    expect(desc).toContain("ref 導出");
+    expect(desc).toContain("rot 適用");
+    expect(desc).toContain("エイリアス解決");
+    expect(desc).toContain("入れ替わる");
+  });
+
+  it("marks.x/y は端揃えエイリアス（left/right/bottom/top）と rot 適用後の w/h 依存を明記する（v0.7）", () => {
+    const descX = DESCRIPTIONS["marks.x"];
+    expect(descX).toContain("left");
+    expect(descX).toContain("right");
+    expect(descX).toContain("rot 適用後");
+
+    const descY = DESCRIPTIONS["marks.y"];
+    expect(descY).toContain("bottom");
+    expect(descY).toContain("top");
+    expect(descY).toContain("rot 適用後");
   });
 
   it("v0.7 追加フィールドの説明がある", () => {

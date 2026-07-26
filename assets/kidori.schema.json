@@ -391,16 +391,44 @@
                       "description": "加工面。front または back。"
                     },
                     "x": {
-                      "type": "number",
-                      "minimum": 0,
                       "default": 0,
-                      "description": "マーク領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。hole の x（中心基準）とは基準が異なるので注意すること。"
+                      "description": "マーク領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。数値の代わりに端揃えエイリアス \"left\"（0）/ \"right\"（part.length − w。w はrot 適用後の値）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決（このエイリアスが参照する w は rot 適用後の値）。hole の x（中心基準）とは基準が異なるので注意すること。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        {
+                          "enum": [
+                            "left",
+                            "right"
+                          ]
+                        }
+                      ]
                     },
                     "y": {
-                      "type": "number",
-                      "minimum": 0,
                       "default": 0,
-                      "description": "マーク領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。hole の y（中心基準）とは基準が異なるので注意すること。"
+                      "description": "マーク領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。数値の代わりに端揃えエイリアス \"bottom\"（0）/ \"top\"（実効幅 − h。h はrot 適用後の値）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決（このエイリアスが参照する h は rot 適用後の値）。hole の y（中心基準）とは基準が異なるので注意すること。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        {
+                          "enum": [
+                            "bottom",
+                            "top"
+                          ]
+                        }
+                      ]
+                    },
+                    "rot": {
+                      "enum": [
+                        0,
+                        90
+                      ],
+                      "default": 0,
+                      "description": "当たり面の面内回転。0（既定）または 90。ref 導出時に断面の幅・厚みを w/h のどちらに割り当てるかを確定するほか、w/h 直接指定にも一様に適用される（90 なら w/h が入れ替わる）。解決順序は ref 導出 → rot 適用 → x/y の端揃えエイリアス解決であり、エイリアスが参照する w/h は rot 適用後の値。矩形領域では180/270 は 0/90 と同値のため 2 値で足りる。"
                     },
                     "note": {
                       "type": "string",
@@ -408,7 +436,7 @@
                     },
                     "ref": {
                       "type": "string",
-                      "description": "相手形状（parts[].id）の断面寸法から領域寸法を導出する。w = 相手形状が使う原材のthickness、h = 相手形状の実効幅（bar なら原材幅、sheet なら part.width）（例: ref: leg → 2×4 の 38×89）。参照先の寸法変更に自動追従する。w/h とは排他（併記は error）。相手部材を 90° 倒して当てる場合は w/h で直接指定する（面ごとに導出値を変える指定は設けない）。"
+                      "description": "相手形状（parts[].id）の断面寸法から領域寸法を導出する。w = 相手形状が使う原材のthickness、h = 相手形状の実効幅（bar なら原材幅、sheet なら part.width）（例: ref: leg → 2×4 の 38×89）。参照先の寸法変更に自動追従する。w/h とは排他（併記は error）。相手部材を 90° 倒して当てる場合は rot: 90 を指定する（w/h の直接指定に頼らなくてよい。rot は当たり面の面内回転としてw/h 直接指定にも一様に適用されるため、面ごとに導出値を変える特別扱いは不要）。"
                     }
                   }
                 },
@@ -432,16 +460,44 @@
                       "description": "加工面。front または back。"
                     },
                     "x": {
-                      "type": "number",
-                      "minimum": 0,
                       "default": 0,
-                      "description": "マーク領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。hole の x（中心基準）とは基準が異なるので注意すること。"
+                      "description": "マーク領域の左下角（部材ローカル原点側の角）の X 座標（mm）。省略時 0。数値の代わりに端揃えエイリアス \"left\"（0）/ \"right\"（part.length − w。w はrot 適用後の値）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決（このエイリアスが参照する w は rot 適用後の値）。hole の x（中心基準）とは基準が異なるので注意すること。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        {
+                          "enum": [
+                            "left",
+                            "right"
+                          ]
+                        }
+                      ]
                     },
                     "y": {
-                      "type": "number",
-                      "minimum": 0,
                       "default": 0,
-                      "description": "マーク領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。hole の y（中心基準）とは基準が異なるので注意すること。"
+                      "description": "マーク領域の左下角（部材ローカル原点側の角）の Y 座標（mm）。省略時 0。数値の代わりに端揃えエイリアス \"bottom\"（0）/ \"top\"（実効幅 − h。h はrot 適用後の値）も指定できる。解決順序は ref 導出 → rot 適用 → x/y のエイリアス解決（このエイリアスが参照する h は rot 適用後の値）。hole の y（中心基準）とは基準が異なるので注意すること。",
+                      "oneOf": [
+                        {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        {
+                          "enum": [
+                            "bottom",
+                            "top"
+                          ]
+                        }
+                      ]
+                    },
+                    "rot": {
+                      "enum": [
+                        0,
+                        90
+                      ],
+                      "default": 0,
+                      "description": "当たり面の面内回転。0（既定）または 90。ref 導出時に断面の幅・厚みを w/h のどちらに割り当てるかを確定するほか、w/h 直接指定にも一様に適用される（90 なら w/h が入れ替わる）。解決順序は ref 導出 → rot 適用 → x/y の端揃えエイリアス解決であり、エイリアスが参照する w/h は rot 適用後の値。矩形領域では180/270 は 0/90 と同値のため 2 値で足りる。"
                     },
                     "note": {
                       "type": "string",
@@ -450,12 +506,12 @@
                     "w": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "description": "マーク領域の幅（mm、X 方向）。h とセットで指定する。ref とは排他（併記も、ref・w/h ともに無いのも error）。"
+                      "description": "マーク領域の幅（mm、X 方向）。h とセットで指定する。ref とは排他（併記も、ref・w/h ともに無いのも error）。rot: 90 を指定すると h と入れ替わる（rot は w/h 直接指定にも一様に適用される）。"
                     },
                     "h": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "description": "マーク領域の高さ（mm、Y 方向）。w とセットで指定する。ref とは排他（併記も、ref・w/h ともに無いのも error）。"
+                      "description": "マーク領域の高さ（mm、Y 方向）。w とセットで指定する。ref とは排他（併記も、ref・w/h ともに無いのも error）。rot: 90 を指定すると w と入れ替わる（rot は w/h 直接指定にも一様に適用される）。"
                     }
                   }
                 }

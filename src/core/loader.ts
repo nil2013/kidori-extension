@@ -460,17 +460,40 @@ function buildStock(s: Record<string, any>): Stock {
   return stock;
 }
 
+/**
+ * marks[].x / marks[].y の素の値を Mark のフィールド型（`number | エイリアス2種`）に
+ * 変換する。省略時は 0（領域の左下角＝部材ローカル原点側の角が基準。SPECS.md §4c）。
+ * エイリアス自体の解決（0 や `面寸法 - w/h` への変換）は `resolveMark`（marks.ts）が
+ * `rot` 適用後に行う（層1 のスキーマ検証を通過済みの前提のため、near/far 以外の
+ * 文字列は来ない）。
+ */
+function buildMarkCoord<Near extends string, Far extends string>(
+  v: unknown,
+  near: Near,
+  far: Far,
+): number | Near | Far {
+  if (v === near || v === far) {
+    return v as Near | Far;
+  }
+  if (v === null || v === undefined) {
+    return 0;
+  }
+  return Number(v);
+}
+
 /** assemblies[].marks[] の1要素を素の値から構築する（ref/w/h の排他は層2が検証）。 */
 function buildMark(m: Record<string, any>): Mark {
   return {
     on: m.on,
     face: m.face,
-    // x/y の省略時は 0（領域の左下角＝部材ローカル原点側の角が基準。SPECS.md §4c）。
-    x: m.x !== null && m.x !== undefined ? Number(m.x) : 0,
-    y: m.y !== null && m.y !== undefined ? Number(m.y) : 0,
+    x: buildMarkCoord(m.x, "left", "right"),
+    y: buildMarkCoord(m.y, "bottom", "top"),
     w: m.w !== null && m.w !== undefined ? Number(m.w) : null,
     h: m.h !== null && m.h !== undefined ? Number(m.h) : null,
     ref: typeof m.ref === "string" ? m.ref : null,
+    // rot の 0/90 以外の値は層1（スキーマの enum）が既に error にしているため、
+    // ここに到達する時点では 90 かそれ以外（省略含む）のいずれかとみなしてよい。
+    rot: m.rot === 90 ? 90 : 0,
     note: typeof m.note === "string" ? m.note : null,
   };
 }

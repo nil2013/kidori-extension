@@ -16,6 +16,9 @@
 #     （parts/uma-1-beam-top.svg / parts/uma-2-beam-top.svg）として出力される。
 #   - marks は木取り図には描かれず、割付（歩留まり・必要本数）にも影響しない。
 #     加工指示図にのみハッチングと「取り付け位置（切削なし）」の注記で描かれる。
+#   - uma-2 は「ねじれ」の組み方（天板が接地面と直角方向に付く構成）で、足の木口
+#     断面を rot: 90 で面内回転させ、y: top で天板の上端に揃えて置く（SPECS.md
+#     §4c の更新後の例そのもの）。
 meta: { project: ウマ, units: mm, schemaVersion: "0.4" }
 
 settings:
@@ -50,5 +53,6 @@ assemblies:
     label: ウマ2号機（互い違いに噛み合う側）
     contains: { leg: 2, beam-top: 1, beam-foot: 1 }
     marks:
-      # 同じ beam-top でも、噛み合わせのために足当たり面の位置が異なる。
-      - { on: beam-top, face: front, ref: leg, x: 120, note: 足当たり面 }
+      # ねじれ方向: 足の木口断面を rot: 90 で面内回転（w/h が入れ替わる）し、
+      # y: top で天板の上端に揃えて置く（面寸法−領域寸法の手計算が不要）。
+      - { on: beam-top, face: front, ref: leg, rot: 90, x: 120, y: top, note: 足当たり面 }

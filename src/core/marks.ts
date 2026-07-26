@@ -1,7 +1,7 @@
 /**
  * 取り付けシロ（marks）の解決（SPECS.md §4c）。
  *
- * `Mark`（正本に書かれたままの形）から `ResolvedMark`（領域寸法 w/h が確定した形）
+ * `Mark`（正本に書かれたままの形）から `ResolvedMark`（領域寸法・位置が確定した形）
  * への変換を、拡張の検証・CLI の `kidori check`・`kidori build` の三者が共有する
  * 単一実装として提供する。描画層（加工指示図）は `ResolvedMark` だけを受け取る。
  *
@@ -12,8 +12,19 @@
  * SPF 2×4（thickness 38 / width 89）を `ref` した場合 (w, h) = (38, 89) となり、
  * SPECS.md §4c の例「`ref: leg` → 2×4 の 38×89」の数値・順序と一致する。
  * `face` には依存しない（面ごとに導出値が変わると同一マークの意味が割れるため）。
- * 相手部材を 90° 倒して当てる場合は `w`/`h` の直接指定で書く（`rotated` 等の
- * 仕様にない拡張は設けない）。
+ *
+ * 解決順序（この順序を守らないと `rot: 90` と `y: top` を組み合わせた SPECS.md §4c
+ * の例そのものが壊れる。`y: top` は「面寸法 − h」に解決され、その h は rot に
+ * よって決まるため）:
+ *   1. `ref`（または直接指定の `w`/`h`）から領域寸法を導出する。
+ *   2. `rot: 90` なら w/h を入れ替える（**ref 導出・直接指定のどちらにも一様に適用**。
+ *      これは「当たり面の面内回転」というマーク自身の性質として定義されているため、
+ *      寸法の指定方法によって同じ `rot: 90` が別の意味になる実装は避ける
+ *      設計判断。SPECS.md 自体は ref 導出への言及に留まる）。
+ *   3. `x`/`y` の端揃えエイリアス（`left`/`right`/`bottom`/`top`）を、2. で確定した
+ *      w/h を使って解決する。基準面寸法は X 軸 = `part.length`、Y 軸 =
+ *      `effectiveWidth(part, stock)`（`extractChainPoints`・`checkGroove` と同じ
+ *      軸割当。新しい規約は作らない）。
  */
 
 import type { Assembly, Mark, Part, Project, ResolvedMark, Stock } from "./types";
@@ -72,10 +83,63 @@ function refSection(
 }
 
 /**
- * 1件の Mark を解決する（`ref` があれば断面寸法を導出、無ければ w/h を採用）。
+ * `on` が指す対象形状とその原材を引く（x/y の端揃えエイリアス解決に使う面寸法の
+ * 算出元。`part.length`・`effectiveWidth(part, stock)` を得るためだけの内部ヘルパ）。
  *
- * @throws Error `ref` と `w`/`h` のどちらからも領域寸法が決まらない場合、または
- *   `ref` 先が解決できない場合（いずれも意味検証層が error にする入力）。
+ * @throws Error 対象形状・原材が見つからない場合（意味検証層を経ていない入力）。
+ */
+function onSection(project: Project, onId: string): { part: Part; stock: Stock } {
+  const part = project.parts.find((p) => p.id === onId);
+  if (part === undefined) {
+    throw new Error(
+      `mark の on が参照する形状 '${onId}' が parts にありません` +
+        "（意味検証層を経ていない入力の可能性があります）。",
+    );
+  }
+  const stock = project.stocks.find((s) => s.id === part.stock);
+  if (stock === undefined) {
+    throw new Error(
+      `mark の対象形状 '${onId}' が参照する原材 '${part.stock}' が stocks にありません` +
+        "（意味検証層を経ていない入力の可能性があります）。",
+    );
+  }
+  return { part, stock };
+}
+
+/**
+ * 端揃えエイリアス（`near`/`far`）または数値の座標を数値に解決する。
+ *
+ * @param value 素の座標値（数値またはエイリアス文字列）。
+ * @param near `"left"`/`"bottom"` に対応する文字列（解決値は常に 0）。
+ * @param far `"right"`/`"top"` に対応する文字列（解決値は `axisSpan - size`）。
+ * @param axisSpan 軸方向の面寸法（X 軸なら `part.length`、Y 軸なら `effectiveWidth`）。
+ * @param size マーク領域の当該軸方向の寸法（**rot 適用後**の w または h）。
+ */
+function resolveAliasCoord(
+  value: number | string,
+  near: string,
+  far: string,
+  axisSpan: number,
+  size: number,
+): number {
+  if (value === near) {
+    return 0;
+  }
+  if (value === far) {
+    return axisSpan - size;
+  }
+  return value as number;
+}
+
+/**
+ * 1件の Mark を解決する。
+ *
+ * 解決順序（モジュール doc コメント参照）: 1. `ref`（または直接指定の `w`/`h`）から
+ * 領域寸法を導出 → 2. `rot: 90` なら w/h を入れ替え → 3. `x`/`y` の端揃えエイリアス
+ * を、2. で確定した w/h を使って解決。
+ *
+ * @throws Error `ref` と `w`/`h` のどちらからも領域寸法が決まらない場合、`ref`/`on`
+ *   先が解決できない場合（いずれも意味検証層が error にする入力）。
  */
 export function resolveMark(project: Project, mark: Mark): ResolvedMark {
   let w: number;
@@ -93,13 +157,26 @@ export function resolveMark(project: Project, mark: Mark): ResolvedMark {
         "（意味検証層を経ていない入力の可能性があります）。",
     );
   }
+
+  // D2: rot は ref 導出・w/h 直接指定のどちらにも一様に適用する（swap）。
+  if (mark.rot === 90) {
+    [w, h] = [h, w];
+  }
+
+  // D3: エイリアス解決の基準面寸法は extractChainPoints/checkGroove と同じ軸割当
+  // （X = part.length、Y = effectiveWidth）。size は rot 適用後の w/h を使う。
+  const { part, stock } = onSection(project, mark.on);
+  const x = resolveAliasCoord(mark.x, "left", "right", part.length, w);
+  const y = resolveAliasCoord(mark.y, "bottom", "top", effectiveWidth(part, stock), h);
+
   return {
     on: mark.on,
     face: mark.face,
-    x: mark.x,
-    y: mark.y,
+    x,
+    y,
     w,
     h,
+    rot: mark.rot,
     ref: mark.ref,
     note: mark.note,
   };
