@@ -18,6 +18,7 @@ import { stringify } from "yaml";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ProjectError } from "../../src/core/errors";
+import { layoutFingerprint } from "../../src/core/fingerprint";
 import {
   SUPPORTED_SCHEMA_VERSION,
   extractStockIds,
@@ -874,5 +875,134 @@ describe("v0.7: SUPPORTED_SCHEMA_VERSION", () => {
     expect(project).not.toBeNull();
     expect(issues.every((i) => i.severity === "warning")).toBe(true);
     expect(issues.some((i) => i.path === "meta.schemaVersion")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U-PIPE: 式解決器（src/core/expr.ts）の loader 統合
+//
+// test/core/expr.test.ts（U-EXPR）が保証する式パーサ・評価器単体の挙動
+// （乗除・括弧・関数・条件分岐・vars の循環/未定義参照検出等）はここでは
+// 再検証しない。ここでの主眼は「loader.ts が実際に expr.ts を正しく配線し、
+// SPECS.md §4d:262-273 の解決順序どおりに動くか」という統合の観点。
+// NaN 穴の閉鎖そのものの証拠は test/core/schema.test.ts の
+// 「U-SCHEMA/U-PIPE: 層1／層2の責務分担」ブロックが担う。
+// ---------------------------------------------------------------------------
+
+describe("U-PIPE: settings/stocks/parts の式解決（既存挙動の保存つき）", () => {
+  it("settings.kerf・stocks[].length・parts[].length に $vars を使った式を書ける", () => {
+    const data = minimalProject();
+    data.vars = { kerf: 2, barLen: 1800, shelfLen: 600 };
+    data.settings.kerf = "$kerf + 1"; // 3（従来の既定値と同じにして他の検証への影響を避ける）
+    data.stocks[0].length = "$barLen + 20"; // 1820（従来値と同じ）
+    data.parts[0].length = "$shelfLen"; // 600（従来値と同じ）
+
+    const { project, issues } = loadProjectFromRaw(data);
+
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+    expect(project).not.toBeNull();
+    expect(project!.settings.kerf).toBe(3);
+    expect(project!.stocks[0].length).toBe(1820);
+    expect(project!.parts[0].length).toBe(600);
+  });
+
+  it("式を一切使わない正本は従来と同一の結果になる（回帰確認）", () => {
+    const { project, issues } = loadProjectFromRaw(minimalProject());
+
+    expect(issues).toEqual([]);
+    expect(project!.settings.kerf).toBe(3);
+    expect(project!.settings.edgeTrim).toBe(5);
+    expect(project!.stocks[0].length).toBe(1820);
+    expect(project!.parts[0].length).toBe(600);
+    expect(project!.parts[1].length).toBe(800);
+  });
+
+  it("loadProjectFromRaw は解決に成功した式を resolved（ResolutionTrace）として返す（D2）", () => {
+    const data = minimalProject();
+    data.vars = { extra: 50 };
+    data.parts[0].length = "550 + $extra";
+
+    const { project, resolved } = loadProjectFromRaw(data);
+
+    expect(project).not.toBeNull();
+    expect(resolved!["parts[0].length"]).toEqual({ expression: "550 + $extra", value: 600 });
+    // vars.extra は数値直書き（文字列式ではない）なので trace には載らない
+    // （resolveVars の既存契約。U-EXPR）。
+    expect(resolved!["vars.extra"]).toBeUndefined();
+  });
+
+  it("loadProject も resolved を返す（ProjectError にならない正常系）", () => {
+    const data = minimalProject();
+    data.vars = { extra: 50 };
+    data.parts[0].length = "550 + $extra";
+    const path = writeYaml(data);
+
+    const { project, resolved } = loadProject(path);
+
+    expect(project.parts[0].length).toBe(600);
+    expect(resolved["parts[0].length"]).toEqual({ expression: "550 + $extra", value: 600 });
+  });
+});
+
+describe("U-PIPE D3: usedElsewhere の配線（フィールド式からのみ参照される変数）", () => {
+  it("フィールド式（parts[].length）からのみ参照される変数は未使用 hint にならない", () => {
+    const data = minimalProject();
+    data.vars = { inset: 50 };
+    data.parts[0].length = "$inset + 550"; // 600
+
+    const { project, issues } = loadProjectFromRaw(data);
+
+    expect(project).not.toBeNull();
+    expect(
+      issues.some((i) => i.severity === "hint" && i.path === "vars.inset"),
+    ).toBe(false);
+  });
+
+  it("対照: フィールド式からもvars内部からも参照されない変数は hint になる", () => {
+    const data = minimalProject();
+    data.vars = { neverUsed: 999 };
+
+    const { project, issues } = loadProjectFromRaw(data);
+
+    // hint のみなので project は null にならない。
+    expect(project).not.toBeNull();
+    expect(
+      issues.some(
+        (i) =>
+          i.severity === "hint" &&
+          i.path === "vars.neverUsed" &&
+          i.message.includes("どこからも参照されていません"),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("U-PIPE D6: フィンガープリントは原式ではなく解決値に基づく", () => {
+  it("原式を変えても解決値が同じならフィンガープリントは不変（回帰固定）", () => {
+    const literal = minimalProject();
+    literal.parts[0].length = 600;
+
+    const exprVersion = minimalProject();
+    exprVersion.vars = { base: 550, extra: 50 };
+    exprVersion.parts[0].length = "$base + $extra"; // 600
+
+    const { project: literalProject, issues: literalIssues } = loadProjectFromRaw(literal);
+    const { project: exprProject, issues: exprIssues } = loadProjectFromRaw(exprVersion);
+
+    expect(literalIssues.filter((i) => i.severity === "error")).toEqual([]);
+    expect(exprIssues.filter((i) => i.severity === "error")).toEqual([]);
+    expect(layoutFingerprint(exprProject!)).toBe(layoutFingerprint(literalProject!));
+  });
+
+  it("対照: 解決値そのものが変われば当然フィンガープリントも変わる", () => {
+    const a = minimalProject();
+    a.parts[0].length = 600;
+    const b = minimalProject();
+    b.parts[0].length = 610;
+
+    const { project: pa } = loadProjectFromRaw(a);
+    const { project: pb } = loadProjectFromRaw(b);
+
+    expect(layoutFingerprint(pa!)).not.toBe(layoutFingerprint(pb!));
   });
 });

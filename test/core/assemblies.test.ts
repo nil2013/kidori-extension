@@ -722,6 +722,11 @@ describe("v0.7: marks の解決（resolveMarks）", () => {
   });
 
   it("sheet 形状の ref は (厚み, part.width) に解決される", () => {
+    // U-PIPE の marks 幾何境界検査（D4。SPECS.md §4c:228）が入ったため、`on` は
+    // 領域（w=12, h=250）を面内に収められる形状でなければならない。beam-top
+    // （2×4材、実効幅89）だと h=250 が面をはみ出すため、自分自身を面寸法
+    // 400×250 で満たせる panel を on にする（ref 由来の w/h という検証の主眼は
+    // 変わらない）。
     const raw = baseRaw();
     raw.parts.push({
       id: "panel",
@@ -734,11 +739,12 @@ describe("v0.7: marks の解決（resolveMarks）", () => {
       {
         id: "asm",
         contains: { leg: 1, "beam-top": 1, panel: 1 },
-        marks: [{ on: "beam-top", face: "front", ref: "panel" }],
+        marks: [{ on: "panel", face: "front", ref: "panel" }],
       },
     ];
-    const { project } = load(raw);
+    const { project, issues } = load(raw);
 
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
     expect(resolveMarks(project!, project!.assemblies[0])[0]).toMatchObject({
       w: 12, // ply-12 の thickness
       h: 250, // sheet なので part.width が実効幅
@@ -852,5 +858,307 @@ describe("v0.7: assemblies 不在時の後方互換", () => {
     expect(issues).toEqual([]);
     expect(project!.assemblies[0].marks).toEqual([]);
     expect(collectMarkVariants(project!)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U-PIPE: 式解決器（src/core/expr.ts）の marks への配線（SPECS.md §4d:262-273）
+//
+// test/core/expr.test.ts（U-EXPR）が保証する式パーサ・評価器単体の挙動は
+// ここでは再検証しない。ここでの主眼は「10段の解決パイプラインの順序が
+// marks の解決に効いていることの実行可能な証拠」と「D4（幾何境界検査）・
+// D5（ref の contains 限定）が実際に配線されていること」。
+// ---------------------------------------------------------------------------
+
+describe("U-PIPE: 解決順序の証拠（stocks 確定 → marks の ref 導出・rot・位置式）", () => {
+  it("stock の寸法が式で書かれていても、mark の ref 導出はその解決値を使う（step4→5 の順序）", () => {
+    // leg（2×4）の thickness/width を vars 経由の式にする。stocks が parts/marks
+    // より先に確定していなければ、ref 導出（marks.ts の refSection）は誤った
+    // （未解決の）値を拾ってしまう。
+    const raw = baseRaw();
+    raw.vars = { legThickness: 38, legWidth: 89 };
+    raw.stocks[0].thickness = "$legThickness";
+    raw.stocks[0].width = "$legWidth";
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", ref: "leg", x: 50 }],
+      },
+    ];
+
+    const { project, issues } = load(raw);
+
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+    const mark = resolveMarks(project!, project!.assemblies[0])[0];
+    expect(mark.w).toBe(38); // leg の thickness（式解決後）
+    expect(mark.h).toBe(89); // leg の実効幅（式解決後）
+  });
+
+  it("位置式（top からのオフセット）も rot 適用後の h を使って解決される（step5→6→7 の順序）", () => {
+    // beam-top（実効幅89）に leg（38×89）を ref、rot: 90 → (w,h) = (89,38)。
+    // y: "top - 10" は (89 - 38) - 10 = 41 に解決される（rot を適用した後の h で
+    // top を計算していなければ再現できない）。
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", ref: "leg", rot: 90, y: "top - 10" }],
+      },
+    ];
+
+    const { project, issues } = load(raw);
+
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+    const mark = resolveMarks(project!, project!.assemblies[0])[0];
+    expect(mark.h).toBe(38);
+    expect(mark.y).toBe(41);
+  });
+
+  it("式の途中値が負でも最終値が有効なら通る（幾何検査は最終解決値のみを判定する。SPECS §4c:228）", () => {
+    // $a - $b + $c = 100 - 200 + 150 = 50（最終値は正常域）だが、左から順に
+    // 評価すると2項目までの部分和は 100 - 200 = -100（負）になる。
+    const raw = baseRaw();
+    raw.vars = { a: 100, b: 200, c: 150 };
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", w: 10, h: 10, x: "$a - $b + $c" }],
+      },
+    ];
+
+    const { project, issues } = load(raw);
+
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+    const mark = resolveMarks(project!, project!.assemblies[0])[0];
+    expect(mark.x).toBe(50);
+  });
+});
+
+describe("U-PIPE D4: marks の幾何境界検査（SPECS.md §4c:228。旧判断『負値・面外を検査しない』の明示的な上書き）", () => {
+  it("w が0以下（式評価で0になる）なら error", () => {
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", w: "$a - $a", h: 10, x: 0, y: 0 }],
+      },
+    ];
+    raw.vars = { a: 5 };
+
+    const { project, issues } = load(raw);
+
+    expect(project).toBeNull();
+    expect(
+      issues.some(
+        (i) =>
+          i.path === "assemblies[0].marks[0].w" &&
+          i.severity === "error" &&
+          i.message.includes("正でなければ"),
+      ),
+    ).toBe(true);
+  });
+
+  it("h が0以下（式評価で0になる）なら error", () => {
+    // 層1のスキーマは h をリテラル指定した場合のみ exclusiveMinimum: 0 で
+    // 縛るため（文字列ブランチは type: string のみ。U-SCHEMA D2）、h=0 を
+    // 幾何フェーズまで通すには w と同様に式で表現する必要がある。
+    const raw = baseRaw();
+    raw.vars = { a: 5 };
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", w: 10, h: "$a - $a", x: 0, y: 0 }],
+      },
+    ];
+
+    const { project, issues } = load(raw);
+
+    expect(project).toBeNull();
+    expect(
+      issues.some(
+        (i) => i.path === "assemblies[0].marks[0].h" && i.severity === "error",
+      ),
+    ).toBe(true);
+  });
+
+  it("x が負に解決されると error（式 '0 - 5'）", () => {
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", w: 10, h: 10, x: "0 - 5", y: 0 }],
+      },
+    ];
+
+    const { project, issues } = load(raw);
+
+    expect(project).toBeNull();
+    expect(
+      issues.some(
+        (i) =>
+          i.path === "assemblies[0].marks[0].x" &&
+          i.severity === "error" &&
+          i.message.includes("0以上でなければ"),
+      ),
+    ).toBe(true);
+  });
+
+  it("y が負に解決されると error", () => {
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", w: 10, h: 10, x: 0, y: "0 - 1" }],
+      },
+    ];
+
+    const { project, issues } = load(raw);
+
+    expect(project).toBeNull();
+    expect(
+      issues.some(
+        (i) => i.path === "assemblies[0].marks[0].y" && i.severity === "error",
+      ),
+    ).toBe(true);
+  });
+
+  it("x+w が対象面の X 方向寸法（part.length）を超えると error（面外）", () => {
+    // beam-top: length 850。x=845, w=10 → x+w=855 > 850。
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", w: 10, h: 10, x: 845, y: 0 }],
+      },
+    ];
+
+    const { project, issues } = load(raw);
+
+    expect(project).toBeNull();
+    expect(
+      issues.some(
+        (i) =>
+          i.path === "assemblies[0].marks[0].x" &&
+          i.severity === "error" &&
+          i.message.includes("面外"),
+      ),
+    ).toBe(true);
+  });
+
+  it("y+h が対象面の Y 方向寸法（実効幅）を超えると error（面外）", () => {
+    // beam-top: 実効幅89（bar なので stock.width）。h=90 だけで既に超える。
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", w: 10, h: 90, x: 0, y: 0 }],
+      },
+    ];
+
+    const { project, issues } = load(raw);
+
+    expect(project).toBeNull();
+    expect(
+      issues.some(
+        (i) =>
+          i.path === "assemblies[0].marks[0].y" &&
+          i.severity === "error" &&
+          i.message.includes("面外"),
+      ),
+    ).toBe(true);
+  });
+
+  it("right/top が負値に解決されるほど領域が面より大きい場合も error（旧判断の明示的な上書き）", () => {
+    // beam-top: length 850。w=900（面より大きい） → x: "right" は 850-900=-50（負）。
+    // 「負値・面外を検査しない」という旧判断はここで明示的に上書きされる。
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", w: 900, h: 10, x: "right", y: 0 }],
+      },
+    ];
+
+    const { project, issues } = load(raw);
+
+    expect(project).toBeNull();
+    expect(
+      issues.some(
+        (i) =>
+          i.path === "assemblies[0].marks[0].x" &&
+          i.severity === "error" &&
+          i.message.includes("0以上でなければ"),
+      ),
+    ).toBe(true);
+  });
+
+  it("境界ちょうど（x+w == part.length）は valid（EPS 許容差内、既存 examples/uma と同じ境界）", () => {
+    // beam-top: length 850。x=760, w=90 → x+w=850（ちょうど）。
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", w: 90, h: 10, x: 760, y: 0 }],
+      },
+    ];
+
+    const { project, issues } = load(raw);
+
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+    expect(project).not.toBeNull();
+  });
+});
+
+describe("U-PIPE D5: ref の contains 限定（SPECS.md §4b:190。既存挙動の訂正）", () => {
+  it("ref が対象 assembly の contains に含まれない形状を参照すると error", () => {
+    const raw = baseRaw();
+    raw.parts.push({ id: "other", label: "他", stock: "2x4-6f", length: 300 });
+    raw.assemblies = [
+      {
+        id: "asm",
+        // "other" は parts には存在するが、この assembly の contains には含まれない。
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", ref: "other" }],
+      },
+    ];
+
+    const { project, issues } = load(raw);
+
+    expect(project).toBeNull();
+    expect(
+      issues.some(
+        (i) =>
+          i.path === "assemblies[0].marks[0].ref" &&
+          i.severity === "error" &&
+          i.message.includes("contains"),
+      ),
+    ).toBe(true);
+  });
+
+  it("対照: ref が同一 assembly の contains に含まれていれば従来どおり valid", () => {
+    const raw = baseRaw();
+    raw.assemblies = [
+      {
+        id: "asm",
+        contains: { leg: 1, "beam-top": 1 },
+        marks: [{ on: "beam-top", face: "front", ref: "leg" }],
+      },
+    ];
+
+    const { project, issues } = load(raw);
+
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+    expect(project).not.toBeNull();
   });
 });

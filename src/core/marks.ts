@@ -146,16 +146,18 @@ function resolveAliasCoord(
 }
 
 /**
- * 1件の Mark を解決する。
+ * mark の領域寸法 (w, h) を、`ref` 導出または直接指定 + `rot` 適用まで解決する
+ * （`resolveMark` の解決順序 1.〜2. のみを担う）。
  *
- * 解決順序（モジュール doc コメント参照）: 1. `ref`（または直接指定の `w`/`h`）から
- * 領域寸法を導出 → 2. `rot: 90` なら w/h を入れ替え → 3. `x`/`y` の端揃えエイリアス
- * を、2. で確定した w/h を使って解決。
+ * U-PIPE（loader.ts）が marks[].x/y の位置式（SPECS.md §4d:245）を評価する際、
+ * 軸コンテキストの `size`（rot 適用後の w または h）を先に得るために公開する
+ * （loader は stocks/parts の解決完了後、`x`/`y` の最終値を確定する前にこの関数を
+ * 呼ぶ。参照フェーズで `ref`/`on` の実在を確認済みであることが前提）。
  *
- * @throws Error `ref` と `w`/`h` のどちらからも領域寸法が決まらない場合、`ref`/`on`
- *   先が解決できない場合（いずれも意味検証層が error にする入力）。
+ * @throws Error `ref` と `w`/`h` のどちらからも領域寸法が決まらない場合、`ref` 先が
+ *   解決できない場合（いずれも意味検証層の参照フェーズが error にする入力）。
  */
-export function resolveMark(project: Project, mark: Mark): ResolvedMark {
+export function resolveMarkSize(project: Project, mark: Mark): { w: number; h: number } {
   let w: number;
   let h: number;
   if (mark.ref !== null) {
@@ -176,12 +178,53 @@ export function resolveMark(project: Project, mark: Mark): ResolvedMark {
   if (mark.rot === 90) {
     [w, h] = [h, w];
   }
+  return { w, h };
+}
+
+/**
+ * mark の対象形状（`on`）が持つ面寸法（X = `part.length`、Y = `effectiveWidth`）を
+ * 返す。U-PIPE が marks[].x/y の位置式評価に使う軸長（`axisSpan`）を得るために
+ * {@link resolveMarkSize} と対で公開する（D4 の幾何境界検査が使う面寸法も同じ経路）。
+ *
+ * @throws Error `on` 先が解決できない場合（意味検証層の参照フェーズが error にする
+ *   入力）。
+ */
+export function resolveMarkAxisSpans(
+  project: Project,
+  mark: Mark,
+): { xSpan: number; ySpan: number } {
+  const { part, stock } = onSection(project, mark.on);
+  return { xSpan: part.length, ySpan: effectiveWidth(part, stock) };
+}
+
+/**
+ * 1件の Mark を解決する。
+ *
+ * 解決順序（モジュール doc コメント参照）: 1. `ref`（または直接指定の `w`/`h`）から
+ * 領域寸法を導出 → 2. `rot: 90` なら w/h を入れ替え → 3. `x`/`y` の端揃えエイリアス
+ * を、2. で確定した w/h を使って解決。1.〜2. は {@link resolveMarkSize} に、軸長は
+ * {@link resolveMarkAxisSpans} に抽出済み（U-PIPE が同じ計算を loader.ts から
+ * 再利用するため）。
+ *
+ * U-PIPE 統合後、`mark.x`/`mark.y` は loader.ts が既に最終数値へ解決済みである
+ * （SPECS.md §4d:262-273 の step 7）。そのため通常この関数が到達する
+ * `resolveAliasCoord` はエイリアス／ミニ式の分岐に入らず、数値をそのまま返す
+ * フォールバックだけが働く。ここで改めてエイリアス・ミニ式を解釈できるのは、
+ * 過去バージョンの Project（例: 手組みのテスト fixture）が `mark.x`/`y` に
+ * `"left"`/`"right"`/`"center"`/`"bottom"`/`"top"` を残したまま渡してきた場合の
+ * 後方互換のためである。
+ *
+ * @throws Error `ref` と `w`/`h` のどちらからも領域寸法が決まらない場合、`ref`/`on`
+ *   先が解決できない場合（いずれも意味検証層が error にする入力）。
+ */
+export function resolveMark(project: Project, mark: Mark): ResolvedMark {
+  const { w, h } = resolveMarkSize(project, mark);
 
   // D3: エイリアス解決の基準面寸法は extractChainPoints/checkGroove と同じ軸割当
   // （X = part.length、Y = effectiveWidth）。size は rot 適用後の w/h を使う。
-  const { part, stock } = onSection(project, mark.on);
-  const x = resolveAliasCoord(mark.x, "left", "right", "center", part.length, w);
-  const y = resolveAliasCoord(mark.y, "bottom", "top", "center", effectiveWidth(part, stock), h);
+  const { xSpan, ySpan } = resolveMarkAxisSpans(project, mark);
+  const x = resolveAliasCoord(mark.x, "left", "right", "center", xSpan, w);
+  const y = resolveAliasCoord(mark.y, "bottom", "top", "center", ySpan, h);
 
   return {
     on: mark.on,

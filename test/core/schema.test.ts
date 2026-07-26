@@ -684,113 +684,174 @@ describe("U-SCHEMA: EXPR_FIELD_CAPABILITIES（expr.ts）とスキーマの union
 });
 
 // ---------------------------------------------------------------------------
-// U-SCHEMA: 層1／層2の責務分担（現状の実装境界。報告参照）
+// U-SCHEMA/U-PIPE: 層1／層2の責務分担（U-PIPE 実装後の確定挙動）
 //
-// U-PIPE（loader への式解決器統合）は本ユニット時点では未着手であり、
-// `src/core/expr.ts` は loader.ts から一切呼ばれていない
-// （`a83858b` のコミットメッセージ「loader への統合は行っていない（後続）」）。
-// そのため、以下のケースはいずれも「層1は文字列として pass させる（D2）」
-// ところまでは意図どおりだが、「現状の層2（loadProjectFromRaw のフル
-// パイプライン）でも検出されない」。多くの場合 `Number(文字列)` が `NaN` に
-// なり、既存の意味検証チェック（`checkGroove`/`checkHole` 等）の比較が
-// NaN によって静かに false になるため（NaN との比較は常に false）。
+// U-PIPE（`src/core/loader.ts` への式解決器統合）が実装され、`src/core/expr.ts`
+// は loader.ts の「式解決」フェーズ（参照フェーズ通過後、幾何フェーズの前）から
+// 呼ばれるようになった。このブロックはもともと U-SCHEMA 時点（U-PIPE 未着手）の
+// 既知のギャップ（層1は文字列として pass させるが、層2が `Number(文字列)` の
+// NaN を静かに素通りしてしまう）を意図的な回帰シグナルとして固定していたもので、
+// U-PIPE 実装により実際に失敗した（当ユニットで確認済み）。ここではその失敗を
+// 受けて「層2で正しく error になり、project は null になる」ことを固定する
+// テストへ更新する（このファイルの他ブロックは U-PIPE の担当外につき変更しない）。
 //
-// これは「層2が拒否する」という当初の想定に反する実機確認済みの既知の
-// ギャップであり、U-PIPE 実装によって埋まる想定である。U-PIPE 実装後は
-// このブロックのテストが失敗し始めることを意図した検知シグナルとして残す
-// （失敗したら、このブロックを「層2で正しく error になる」テストへ更新する）。
-//
+// 各テストは実際に観測された診断メッセージ（実機確認）を部分一致で検証する。
 // 式のパース自体の拒否（乗除・括弧・関数・条件分岐・ドット参照・未知
 // エイリアス・vars の未定義/循環参照・空式・演算子連続・末尾演算子・指数
 // 表記）は `src/core/expr.ts` 単体では既に test/core/expr.test.ts（U-EXPR）が
-// 固定済み。ここでの主眼は「schema/loader 境界を実際に通したときに何が
-// 起きるか」であり、パーサの網羅テストを重複させることではない。
+// 固定済み。ここでの主眼は「schema/loader 境界を実際に通したときに、層2が
+// project=null で拒否すること」であり、パーサの網羅テストを重複させることでは
+// ない。
 // ---------------------------------------------------------------------------
 
-describe("U-SCHEMA: 層1／層2の責務分担（現状の実装境界。U-PIPE 未着手）", () => {
-  function expectPassesLayer1AndCurrentlyUncaughtByLayer2(mutate: (data: any) => void): void {
+describe("U-SCHEMA/U-PIPE: 層1／層2の責務分担（層1は文字列として pass、層2が式解決で正しく error にする）", () => {
+  function expectRejectedByLayer2(
+    mutate: (data: any) => void,
+    messageSubstring: string,
+    path?: string,
+  ): void {
     const data = minimalProject();
     mutate(data);
 
     expect(validate(data), "層1").toEqual([]);
 
     const { project, issues } = loadProjectFromRaw(data, {});
-    expect(project, `層2（現状。issues=${JSON.stringify(issues)}）`).not.toBeNull();
+    expect(project, `層2は project=null で拒否するべき（issues=${JSON.stringify(issues)}）`).toBeNull();
+
+    const matched = issues.filter(
+      (i) =>
+        i.severity === "error" &&
+        i.message.includes(messageSubstring) &&
+        (path === undefined || i.path === path),
+    );
+    expect(
+      matched.length,
+      `期待した診断（path=${path ?? "任意"}, message⊇"${messageSubstring}"）が` +
+        `見つかりません（issues=${JSON.stringify(issues)}）`,
+    ).toBeGreaterThan(0);
   }
 
   it("乗算 $a * 2（SPECS §4d が明示的に禁じる構文）", () => {
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "$a * 2"));
+    expectRejectedByLayer2(
+      (d) => (d.stocks[0].length = "$a * 2"),
+      "演算子は + / - のみ使用できます",
+      "stocks[0].length",
+    );
   });
 
   it("除算 $a / 2", () => {
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "$a / 2"));
+    expectRejectedByLayer2(
+      (d) => (d.stocks[0].length = "$a / 2"),
+      "演算子は + / - のみ使用できます",
+      "stocks[0].length",
+    );
   });
 
   it("括弧 ($a + $b)", () => {
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "($a + $b)"));
+    expectRejectedByLayer2(
+      (d) => (d.stocks[0].length = "($a + $b)"),
+      "括弧は使用できません",
+      "stocks[0].length",
+    );
   });
 
   it("関数呼び出し max($a, $b)", () => {
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "max($a, $b)"));
+    expectRejectedByLayer2(
+      (d) => (d.stocks[0].length = "max($a, $b)"),
+      "関数呼び出しは使用できません",
+      "stocks[0].length",
+    );
   });
 
   it("条件分岐（三項演算子）", () => {
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2(
+    expectRejectedByLayer2(
       (d) => (d.stocks[0].length = "$a > 0 ? $a : 0"),
+      "演算子は + / - のみ使用できます",
+      "stocks[0].length",
     );
   });
 
   it("ドット入り識別子（他部材フィールドの直接参照）$parts.leg.length", () => {
-    // parts[1]（side-0。sheet 部材）の length に設定すると、NaN が
-    // checkPhysicalFit の fits 判定（`<=` 比較。NaN は常に false）を通じて
-    // 「収まらない」という**別の理由**でたまたま error になってしまい、
-    // 「現状の層2は式を検出しない」という本テストの主張とは無関係の error で
-    // 汚染される（実機確認済み。bar 部材の checkPhysicalFit は逆に NaN を
-    // 素通りする。層により NaN の伝播先が異なり挙動が非対称なため、
-    // stocks[].length を使う）。
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2(
+    // U-SCHEMA 時点では bar/sheet で NaN の伝播先が非対称なため stocks[].length を
+    // 使う理由があったが、U-PIPE 実装後は式解決自体が明確な error を出すため
+    // その配慮は不要になった。既存のケース選択（stocks[].length）はそのまま流用する。
+    expectRejectedByLayer2(
       (d) => (d.stocks[0].length = "$parts.leg.length"),
+      "ドット・角括弧は使用できません",
+      "stocks[0].length",
     );
   });
 
   it('未知エイリアス "middle"（marks.x）', () => {
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => {
-      d.assemblies = [
-        {
-          id: "asm",
-          contains: { "shelf-0": 1 },
-          marks: [{ on: "shelf-0", face: "front", w: 10, h: 10, x: "middle", y: 0 }],
-        },
-      ];
-    });
+    expectRejectedByLayer2(
+      (d) => {
+        d.assemblies = [
+          {
+            id: "asm",
+            contains: { "shelf-0": 1 },
+            marks: [{ on: "shelf-0", face: "front", w: 10, h: 10, x: "middle", y: 0 }],
+          },
+        ];
+      },
+      "不明な識別子です: 'middle'",
+      "assemblies[0].marks[0].x",
+    );
   });
 
   it('文脈非依存フィールド（hole.x）へのエイリアス "center"（marks 専用のエイリアスは hole では無効）', () => {
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.parts[1].features[1].x = "center"));
+    expectRejectedByLayer2(
+      (d) => (d.parts[1].features[1].x = "center"),
+      "位置式（marks[].x/marks[].y）でのみ使用できます",
+      "parts[1].features[1].x",
+    );
   });
 
   it('文脈非依存フィールド（groove.pos）へのエイリアス "left"', () => {
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.parts[1].features[0].pos = "left"));
+    expectRejectedByLayer2(
+      (d) => (d.parts[1].features[0].pos = "left"),
+      "位置式（marks[].x/marks[].y）でのみ使用できます",
+      "parts[1].features[0].pos",
+    );
   });
 
-  it('vars 内のエイリアス "right"（vars は文脈非依存式のみを許し位置エイリアス不可。かつ現状の層2は vars を一切読まない）', () => {
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.vars = { a: "right" }));
+  it('vars 内のエイリアス "right"（vars は文脈非依存式のみを許し位置エイリアス不可）', () => {
+    expectRejectedByLayer2(
+      (d) => (d.vars = { a: "right" }),
+      "位置式（marks[].x/marks[].y）でのみ使用できます",
+      "vars.a",
+    );
   });
 
   it("未定義変数 $doesNotExist", () => {
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "$doesNotExist"));
+    expectRejectedByLayer2(
+      (d) => (d.stocks[0].length = "$doesNotExist"),
+      "未定義の変数です: '$doesNotExist'",
+      "stocks[0].length",
+    );
   });
 
   it("演算子の連続 $a + + $b", () => {
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "$a + + $b"));
+    expectRejectedByLayer2(
+      (d) => (d.stocks[0].length = "$a + + $b"),
+      "予期しない文字です",
+      "stocks[0].length",
+    );
   });
 
   it("末尾演算子 $a +", () => {
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "$a +"));
+    expectRejectedByLayer2(
+      (d) => (d.stocks[0].length = "$a +"),
+      "被演算子が必要です",
+      "stocks[0].length",
+    );
   });
 
   it('指数表記 "1e3"（D4: expr.ts が明示的に拒否する構文）', () => {
-    expectPassesLayer1AndCurrentlyUncaughtByLayer2((d) => (d.stocks[0].length = "1e3"));
+    expectRejectedByLayer2(
+      (d) => (d.stocks[0].length = "1e3"),
+      "指数表記",
+      "stocks[0].length",
+    );
   });
 });
 

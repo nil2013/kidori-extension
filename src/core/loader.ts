@@ -24,8 +24,17 @@ import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { parse } from "yaml";
 
-import { Issue, ProjectError } from "./errors";
-import { markVariantStem } from "./marks";
+import { Issue, ProjectError, issueFromExprDiagnostic } from "./errors";
+import {
+  AxisEvalContext,
+  ExprEnv,
+  ResolutionTrace,
+  collectVarRefs,
+  parseExpr,
+  resolveFieldExpr,
+  resolveVars,
+} from "./expr";
+import { markVariantStem, resolveMarkAxisSpans, resolveMarkSize } from "./marks";
 import { EPS } from "./packing/common";
 import { ID_PATTERN, buildSchema, buildStocksFileSchema } from "./schema";
 import {
@@ -590,6 +599,412 @@ function buildProject(raw: Record<string, any>): Project {
 }
 
 // ---------------------------------------------------------------------------
+// U-PIPE: 式解決（SPECS.md §4d:262-273 の10段の解決パイプライン）
+//
+// `buildProject`（前節）は参照フェーズ（D1）の構造検証専用に残す（id・stock参照・
+// on/ref の実在・contains 参照はすべて文字列比較であり、数値解決の前でも正しく
+// 判定できる。numeric なフィールドが式文字列のとき `Number(...)` は NaN になるが
+// 参照フェーズの各 check は数値を読まないため無害）。
+//
+// ここからは、参照フェーズを通過した後にのみ呼び出す「解決済みモデル構築」
+// （settings → stocks → parts/features → marks.w/h → marks.ref導出 → rot →
+// marks.x/y の順。SPECS.md §4d の step 3〜7）を実装する。
+// ---------------------------------------------------------------------------
+
+/** raw の値を配列として扱う（配列でなければ空配列）。既存の各所に散っていた
+ * `Array.isArray(v) ? v : []` の反復を1箇所にまとめる。 */
+function asArray(v: unknown): Record<string, any>[] {
+  return Array.isArray(v) ? (v as Record<string, any>[]) : [];
+}
+
+/**
+ * 数値または式文字列（`raw`）を解決値へ変換する（必須フィールド用）。
+ *
+ * - `raw` が既に `number` ならそのまま返す（式ではないため trace に載せない。D2）。
+ * - `raw` が `string` なら {@link resolveFieldExpr} でパース＋評価し、成功時は
+ *   `trace[path]` に原式・解決値を記録、失敗時は `issues` に {@link Issue} を追加し
+ *   `NaN` を返す（呼び出し側の下流比較を silently false にするだけで、`issues` に
+ *   error が積まれているため全体としては project=null に落ちる。D1 が「参照フェーズは
+ *   解決の前」とする理由と対称に、値フェーズの1フィールド失敗が他フィールドの
+ *   解決を止める理由はないため、best-effort で解決を続行する）。
+ * - それ以外の型（層1を通過した入力では起こらないはずの防御的分岐）は `NaN`。
+ */
+function resolveRequiredNum(
+  path: string,
+  raw: unknown,
+  env: ExprEnv,
+  issues: Issue[],
+  trace: ResolutionTrace,
+  axis?: AxisEvalContext,
+): number {
+  if (typeof raw === "number") {
+    return raw;
+  }
+  if (typeof raw === "string") {
+    const result = resolveFieldExpr(path, raw, env, axis);
+    if (!result.ok) {
+      issues.push(...result.diagnostics.map(issueFromExprDiagnostic));
+      return NaN;
+    }
+    trace[path] = result.trace;
+    return result.value;
+  }
+  return NaN;
+}
+
+/** {@link resolveRequiredNum} の省略可能版（`null`/`undefined` は `null` のまま通す）。 */
+function resolveOptionalNum(
+  path: string,
+  raw: unknown,
+  env: ExprEnv,
+  issues: Issue[],
+  trace: ResolutionTrace,
+  axis?: AxisEvalContext,
+): number | null {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  return resolveRequiredNum(path, raw, env, issues, trace, axis);
+}
+
+/** {@link resolveRequiredNum} の既定値版（`null`/`undefined` は `defaultValue`）。 */
+function resolveNumWithDefault(
+  path: string,
+  raw: unknown,
+  env: ExprEnv,
+  issues: Issue[],
+  trace: ResolutionTrace,
+  defaultValue: number,
+  axis?: AxisEvalContext,
+): number {
+  if (raw === null || raw === undefined) {
+    return defaultValue;
+  }
+  return resolveRequiredNum(path, raw, env, issues, trace, axis);
+}
+
+/**
+ * raw 全体を走査し、式を受け付ける全フィールド（EXPR_FIELD_CAPABILITIES の完全
+ * 列挙。`vars.*` を除く）の文字列値から `$var` 参照を収集する（D3・最重要の落とし穴）。
+ *
+ * `resolveVars` の `usedElsewhere` に渡すためだけの軽量な下見であり、パース失敗は
+ * 無視する（診断は本番の解決パスが改めて出す。ここでの目的は「どの vars がフィールド
+ * 式から使われているか」の収集のみ）。marks[].x/y（位置式）の値も対象に含める
+ * （純粋な揃えエイリアス語だけの場合は `parseExpr` が alias operand を返すため
+ * `collectVarRefs` は空集合を返す＝実害はない）。
+ */
+function collectAllFieldVarRefs(raw: Record<string, any>): Set<string> {
+  const refs = new Set<string>();
+  const add = (v: unknown): void => {
+    if (typeof v !== "string") {
+      return;
+    }
+    const parsed = parseExpr(v);
+    if (parsed.ok) {
+      for (const name of collectVarRefs(parsed.expr)) {
+        refs.add(name);
+      }
+    }
+  };
+
+  const settings = isPlainObject(raw.settings) ? raw.settings : {};
+  add(settings.kerf);
+  add(settings.edgeTrim);
+
+  for (const s of asArray(raw.stocks)) {
+    add(s.length);
+    add(s.width);
+    add(s.thickness);
+  }
+  for (const p of asArray(raw.parts)) {
+    add(p.length);
+    add(p.width);
+    for (const f of asArray(p.features)) {
+      add(f.pos);
+      add(f.width);
+      add(f.depth);
+      add(f.from);
+      add(f.to);
+      add(f.x);
+      add(f.y);
+      add(f.dia);
+    }
+  }
+  for (const a of asArray(raw.assemblies)) {
+    for (const m of asArray(a.marks)) {
+      add(m.x);
+      add(m.y);
+      add(m.w);
+      add(m.h);
+    }
+  }
+  return refs;
+}
+
+/** settings を解決する（SPECS.md §4d step 4）。kerf/edgeTrim のみが式対象。 */
+function resolveSettings(
+  rawSettings: Record<string, any>,
+  env: ExprEnv,
+  issues: Issue[],
+  trace: ResolutionTrace,
+): Settings {
+  return {
+    kerf: resolveNumWithDefault("settings.kerf", rawSettings.kerf, env, issues, trace, 3.0),
+    edgeTrim: resolveNumWithDefault(
+      "settings.edgeTrim",
+      rawSettings.edgeTrim,
+      env,
+      issues,
+      trace,
+      5.0,
+    ),
+    candidates: "candidates" in rawSettings ? Math.trunc(rawSettings.candidates) : 3,
+    rank:
+      "rank" in rawSettings
+        ? ([...rawSettings.rank] as RankKey[])
+        : ([...DEFAULT_RANK] as RankKey[]),
+    exact: "exact" in rawSettings ? (rawSettings.exact as ExactMode) : "auto",
+    selectedPlan: "selectedPlan" in rawSettings ? rawSettings.selectedPlan : null,
+  };
+}
+
+/**
+ * stocks[] の1要素を解決する（SPECS.md §4d step 4）。
+ *
+ * `env` は呼び出し側が決める: 正本インラインの stocks・stocksFile 双方が同じ
+ * この関数を通るが、stocksFile 参照先は `vars` 区画を持てない（schema.ts の
+ * `buildStocksFileSchema` が `vars` を許可しない）ため、呼び出し側は空の env
+ * （`{}`）を渡す。これにより「参照先は同一ファイル内で閉じる」という SPECS.md
+ * §4d の原則（vars は同一ファイル内限定）が stocksFile にも一貫して及ぶ。
+ */
+function resolveStock(
+  s: Record<string, any>,
+  path: string,
+  env: ExprEnv,
+  issues: Issue[],
+  trace: ResolutionTrace,
+): Stock {
+  const stock: Stock = {
+    id: s.id,
+    label: s.label,
+    kind: s.kind,
+    length: resolveRequiredNum(`${path}.length`, s.length, env, issues, trace),
+    width: resolveRequiredNum(`${path}.width`, s.width, env, issues, trace),
+    thickness: resolveRequiredNum(`${path}.thickness`, s.thickness, env, issues, trace),
+    price: s.price !== null && s.price !== undefined ? Number(s.price) : null,
+  };
+  if (typeof s.preset === "string") {
+    stock.preset = s.preset;
+  }
+  return stock;
+}
+
+/** parts[].features[] の1要素を解決する（SPECS.md §4d step 4）。 */
+function resolveFeature(
+  rawFeature: Record<string, any>,
+  path: string,
+  env: ExprEnv,
+  issues: Issue[],
+  trace: ResolutionTrace,
+): Feature {
+  if (rawFeature.type === "groove") {
+    const groove: Groove = {
+      type: "groove",
+      face: rawFeature.face,
+      dir: rawFeature.dir,
+      pos: resolveRequiredNum(`${path}.pos`, rawFeature.pos, env, issues, trace),
+      width: resolveRequiredNum(`${path}.width`, rawFeature.width, env, issues, trace),
+      depth: resolveRequiredNum(`${path}.depth`, rawFeature.depth, env, issues, trace),
+      end: rawFeature.end,
+      from: resolveOptionalNum(`${path}.from`, rawFeature.from, env, issues, trace),
+      to: resolveOptionalNum(`${path}.to`, rawFeature.to, env, issues, trace),
+    };
+    return groove;
+  }
+  // スキーマ検証(oneOf: groove/hole)を通過している前提のため、それ以外は hole。
+  const hole: Hole = {
+    type: "hole",
+    face: rawFeature.face,
+    x: resolveRequiredNum(`${path}.x`, rawFeature.x, env, issues, trace),
+    y: resolveRequiredNum(`${path}.y`, rawFeature.y, env, issues, trace),
+    dia: resolveRequiredNum(`${path}.dia`, rawFeature.dia, env, issues, trace),
+    depth: resolveOptionalNum(`${path}.depth`, rawFeature.depth, env, issues, trace),
+  };
+  return hole;
+}
+
+/**
+ * parts[] の1要素を解決する（SPECS.md §4d step 4）。qty 導出は既存 `buildProject`
+ * と同一ロジック（式の対象外フィールドなので変更不要。SPECS.md §4d:246）。
+ */
+function resolvePart(
+  p: Record<string, any>,
+  path: string,
+  assemblies: readonly Assembly[],
+  env: ExprEnv,
+  issues: Issue[],
+  trace: ResolutionTrace,
+): Part {
+  const derived = containedQty(assemblies, p.id);
+  const declared = p.qty !== null && p.qty !== undefined ? Math.trunc(Number(p.qty)) : null;
+  return {
+    id: p.id,
+    label: p.label,
+    qty: derived ?? declared ?? 0,
+    stock: p.stock,
+    length: resolveRequiredNum(`${path}.length`, p.length, env, issues, trace),
+    width: resolveOptionalNum(`${path}.width`, p.width, env, issues, trace),
+    rot: p.rot !== undefined ? Boolean(p.rot) : true,
+    features: asArray(p.features).map((f, j) =>
+      resolveFeature(f, `${path}.features[${j}]`, env, issues, trace),
+    ),
+  };
+}
+
+/**
+ * assemblies[].marks[] の1要素を解決する（SPECS.md §4d step 4: 明示 w/h のみ）。
+ *
+ * `x`/`y` はここでは解決しない（`0` を仮置きする）。w/h の確定（`ref` 導出・`rot`
+ * 適用）には parts/stocks が必要なため、`resolveMarkPositions`（後述）が
+ * `buildResolvedProject` の全体構築後に第2パスとして解決する（SPECS.md §4d
+ * step 5〜7。marks.ts の `resolveMarkSize`/`resolveMarkAxisSpans` を使う）。
+ */
+function resolveMarkEntry(
+  m: Record<string, any>,
+  path: string,
+  env: ExprEnv,
+  issues: Issue[],
+  trace: ResolutionTrace,
+): Mark {
+  return {
+    on: m.on,
+    face: m.face,
+    x: 0, // 仮置き（resolveMarkPositions が上書きする）
+    y: 0, // 仮置き（resolveMarkPositions が上書きする）
+    w: resolveOptionalNum(`${path}.w`, m.w, env, issues, trace),
+    h: resolveOptionalNum(`${path}.h`, m.h, env, issues, trace),
+    ref: typeof m.ref === "string" ? m.ref : null,
+    rot: m.rot === 90 ? 90 : 0,
+    note: typeof m.note === "string" ? m.note : null,
+  };
+}
+
+/** assemblies[] の1要素を解決する（SPECS.md §4d step 4）。contains は式対象外。 */
+function resolveAssembly(
+  a: Record<string, any>,
+  path: string,
+  env: ExprEnv,
+  issues: Issue[],
+  trace: ResolutionTrace,
+): Assembly {
+  const contains: Record<string, number> = {};
+  if (isPlainObject(a.contains)) {
+    for (const [partId, n] of Object.entries(a.contains)) {
+      contains[partId] = Math.trunc(Number(n));
+    }
+  }
+  return {
+    id: a.id,
+    label: typeof a.label === "string" ? a.label : null,
+    contains,
+    marks: asArray(a.marks).map((m, j) =>
+      resolveMarkEntry(m, `${path}.marks[${j}]`, env, issues, trace),
+    ),
+  };
+}
+
+/**
+ * 解決済み Project を構築する（SPECS.md §4d step 4: settings → stocks → parts/
+ * features・明示 marks.w/h の順）。参照フェーズ（`buildProject` ベース）を既に
+ * 通過している前提であり、`ref`/`on` の不在によるここでの例外送出は起こらない
+ * はずである。
+ *
+ * marks[].x/y（位置式。step 5〜7）はここでは仮置きのままで、呼び出し側
+ * （`loadProjectFromRaw`）が `resolveMarkPositions` で別途解決する
+ * （stocks/parts が確定した後でないと `ref`/`rot` 込みの軸長・size が定まらないため）。
+ */
+function buildResolvedProject(
+  raw: Record<string, any>,
+  env: ExprEnv,
+  issues: Issue[],
+  trace: ResolutionTrace,
+): Project {
+  const rawMeta = raw.meta as Record<string, any>;
+  const meta: Meta = {
+    project: rawMeta.project,
+    units: rawMeta.units,
+    schemaVersion: String(rawMeta.schemaVersion),
+  };
+
+  const rawSettings: Record<string, any> = isPlainObject(raw.settings) ? raw.settings : {};
+  const settings = resolveSettings(rawSettings, env, issues, trace);
+
+  const stocks: Stock[] = asArray(raw.stocks).map((s, i) =>
+    resolveStock(s, `stocks[${i}]`, env, issues, trace),
+  );
+
+  const assemblies: Assembly[] = asArray(raw.assemblies).map((a, i) =>
+    resolveAssembly(a, `assemblies[${i}]`, env, issues, trace),
+  );
+
+  const parts: Part[] = asArray(raw.parts).map((p, i) =>
+    resolvePart(p, `parts[${i}]`, assemblies, env, issues, trace),
+  );
+
+  return { meta, settings, stocks, parts, assemblies };
+}
+
+/**
+ * marks[].x/y の最終値を解決する（SPECS.md §4d step 5〜7）。
+ *
+ * `project` は既に stocks/parts/assemblies（marks.w/h まで）が確定済みである必要が
+ * ある。各 mark について marks.ts の `resolveMarkSize`（ref 導出 → rot 適用）・
+ * `resolveMarkAxisSpans`（対象面の軸長）を呼び、その結果を軸コンテキストとして
+ * `resolveRequiredNum`/`resolveNumWithDefault` に渡すことで、位置式
+ * （`"right - 40"` 等。揃えエイリアス込み）を評価する。`project.assemblies[].marks[]`
+ * を破壊的に更新する（配列参照はそのまま、要素の x/y だけを上書きする）。
+ *
+ * `resolveMarkSize`/`resolveMarkAxisSpans` は参照フェーズを通過済みの入力に対しては
+ * 例外を投げない設計だが、防御的に try/catch する（万一の入力不整合で loader 全体が
+ * 落ちるよりは、この mark の位置解決だけを諦める方が安全なため）。
+ */
+function resolveMarkPositions(
+  project: Project,
+  raw: Record<string, any>,
+  env: ExprEnv,
+  issues: Issue[],
+  trace: ResolutionTrace,
+): void {
+  const rawAssemblies = asArray(raw.assemblies);
+  project.assemblies.forEach((assembly, i) => {
+    const rawMarks = asArray(rawAssemblies[i]?.marks);
+    assembly.marks.forEach((mark, j) => {
+      const path = `assemblies[${i}].marks[${j}]`;
+      const rawMark: Record<string, any> = rawMarks[j] ?? {};
+      let size: { w: number; h: number };
+      let spans: { xSpan: number; ySpan: number };
+      try {
+        size = resolveMarkSize(project, mark);
+        spans = resolveMarkAxisSpans(project, mark);
+      } catch {
+        // 参照フェーズで既に error 報告済みのはず（到達しないはずの防御）。
+        return;
+      }
+      mark.x = resolveNumWithDefault(`${path}.x`, rawMark.x, env, issues, trace, 0, {
+        axis: "x",
+        axisSpan: spans.xSpan,
+        size: size.w,
+      });
+      mark.y = resolveNumWithDefault(`${path}.y`, rawMark.y, env, issues, trace, 0, {
+        axis: "y",
+        axisSpan: spans.ySpan,
+        size: size.h,
+      });
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // 層2: 意味検証（設計正本 §2 の9項目 ＋ v0.4 追加検証）
 // ---------------------------------------------------------------------------
 
@@ -1064,7 +1479,11 @@ function checkAssemblyContains(project: Project): Issue[] {
  *
  * - `on` は parts に存在し、かつその構成の contains に含まれること
  *   （含まれなければマークを適用する部材の実体が構成内に無い）。
- * - `ref` は parts に存在すること。
+ * - `ref` は parts に存在し、かつその構成の contains に含まれること
+ *   （U-PIPE D5: SPECS.md §4b:190「同一assemblyの marks では、on と ref はともに
+ *   そのassemblyの contains に含まれる形状に限定する」の逐語どおり。旧実装は `ref`
+ *   について parts 内の存在しか検査しておらず、`on` にしかない contains 検査を
+ *   `ref` にも揃える訂正。既存有効ファイルが新たに error になりうる — 報告参照）。
  * - `ref` と `w`/`h` は排他（併記は error。どちらも無ければ領域寸法が決まらず error）。
  *   併記の側はスキーマの oneOf（層1）でも弾かれるが、権威はこちらに置く
  *   （parts[].stock の enum と checkStockReferences の関係と同じ）。
@@ -1095,13 +1514,24 @@ function checkMarks(project: Project): Issue[] {
         });
       }
 
-      if (m.ref !== null && !partIds.has(m.ref)) {
-        issues.push({
-          path: `${mpath}.ref`,
-          message:
-            `構成 '${a.id}' の mark の ref が存在しない形状 id を参照しています: '${m.ref}'。`,
-          severity: "error",
-        });
+      if (m.ref !== null) {
+        if (!partIds.has(m.ref)) {
+          issues.push({
+            path: `${mpath}.ref`,
+            message:
+              `構成 '${a.id}' の mark の ref が存在しない形状 id を参照しています: '${m.ref}'。`,
+            severity: "error",
+          });
+        } else if (!Object.prototype.hasOwnProperty.call(a.contains, m.ref)) {
+          // D5: on と同じ contains 限定を ref にも適用する（SPECS.md §4b:190）。
+          issues.push({
+            path: `${mpath}.ref`,
+            message:
+              `mark の ref が参照する形状 '${m.ref}' が構成 '${a.id}' の contains に` +
+              "含まれていません（同一 assembly 内の形状のみ ref できます）。",
+            severity: "error",
+          });
+        }
       }
 
       const hasSize = m.w !== null || m.h !== null;
@@ -1175,6 +1605,99 @@ function checkMarkVariantCollisions(project: Project): Issue[] {
 }
 
 /**
+ * U-PIPE D4: marks の幾何境界検査（SPECS.md §4c:228。逐語）:
+ * 「最終解決後の値に対し、微小許容差を考慮して w > 0、h > 0、x ≥ 0、y ≥ 0、
+ * x + w ≤ face.length、y + h ≤ face.width を必須とし、違反は error。式の途中値が
+ * 負でも最終値が有効なら許可する。`right`/`top` が負値に解決されるほど領域が面より
+ * 大きい場合も error とし、旧判断『負値・面外を検査しない』は本仕様で明示的に
+ * 上書きする」。
+ *
+ * 幾何フェーズ（解決後）の検査であり、参照フェーズ（`checkMarks` 等）を通過した
+ * `Project`（marks[].x/y/w/h が最終解決値）に対して実行する。w/h は `ref` 導出の
+ * 場合 `Mark.w`/`Mark.h` が `null` のままなので、marks.ts の `resolveMarkSize`
+ * （ref 導出 → rot 適用）で実測する（`resolveMarkAxisSpans` で対象面寸法も得る）。
+ * どちらも参照フェーズ通過後は例外を投げないはずだが、防御的に try/catch する。
+ *
+ * 「式の途中値が負でも最終値が有効なら許可する」は本関数が判定対象を
+ * `mark.x`/`mark.y`（loader が既に最終値へ解決済み。step 5〜7 の結果）に限ることで
+ * 自動的に満たされる（式の評価は `evaluateExpr` が左結合で加減算するだけで、
+ * 各項ごとの途中合計を検査する経路がそもそも存在しない）。
+ */
+function checkMarksGeometry(project: Project): Issue[] {
+  const issues: Issue[] = [];
+  project.assemblies.forEach((a, i) => {
+    a.marks.forEach((m, j) => {
+      const mpath = `assemblies[${i}].marks[${j}]`;
+      let size: { w: number; h: number };
+      let spans: { xSpan: number; ySpan: number };
+      try {
+        size = resolveMarkSize(project, m);
+        spans = resolveMarkAxisSpans(project, m);
+      } catch {
+        return; // 参照フェーズで既に error 報告済みのはず（到達しないはずの防御）。
+      }
+      const { w, h } = size;
+      const { xSpan, ySpan } = spans;
+      // U-PIPE 統合後、mark.x/y は既に最終数値（loader が resolveMarkPositions で
+      // 解決済み）。number であることは Mark の型では保証されないため、念のため
+      // Number(...) を通す（旧 fixture が alias 文字列を残していても NaN になり、
+      // 下の比較がすべて false（silently pass）ではなく `!(NaN > -EPS)` 等で
+      // 正しく検出される桁になるよう、NaN 比較の向きを揃えるのが目的）。
+      const x = Number(m.x);
+      const y = Number(m.y);
+
+      if (!(w > EPS)) {
+        issues.push({
+          path: `${mpath}.w`,
+          message: `mark の幅 w=${w}mm は正でなければなりません。`,
+          severity: "error",
+        });
+      }
+      if (!(h > EPS)) {
+        issues.push({
+          path: `${mpath}.h`,
+          message: `mark の高さ h=${h}mm は正でなければなりません。`,
+          severity: "error",
+        });
+      }
+      if (!(x >= -EPS)) {
+        issues.push({
+          path: `${mpath}.x`,
+          message: `mark の x=${x}mm は0以上でなければなりません。`,
+          severity: "error",
+        });
+      }
+      if (!(y >= -EPS)) {
+        issues.push({
+          path: `${mpath}.y`,
+          message: `mark の y=${y}mm は0以上でなければなりません。`,
+          severity: "error",
+        });
+      }
+      if (!(x + w <= xSpan + EPS)) {
+        issues.push({
+          path: `${mpath}.x`,
+          message:
+            `mark の領域 x+w=${x + w}mm が対象面の X 方向寸法（part.length）` +
+            `${xSpan}mm を超えています（面外）。`,
+          severity: "error",
+        });
+      }
+      if (!(y + h <= ySpan + EPS)) {
+        issues.push({
+          path: `${mpath}.y`,
+          message:
+            `mark の領域 y+h=${y + h}mm が対象面の Y 方向寸法（実効幅）` +
+            `${ySpan}mm を超えています（面外）。`,
+          severity: "error",
+        });
+      }
+    });
+  });
+  return issues;
+}
+
+/**
  * v0.7: parts[].qty の導出（SPECS.md §4c）。
  *
  * 1. いずれかの構成の contains に現れる形状 → **全構成の合計が勝つ**。
@@ -1223,28 +1746,10 @@ function checkQtyDerivation(project: Project, raw: Record<string, unknown>): Iss
   return issues;
 }
 
-/** 層2: 意味検証をすべて実行する。 */
-function semanticValidate(project: Project, raw: Record<string, unknown>): Issue[] {
-  const stocksById = new Map(project.stocks.map((s) => [s.id, s]));
-
-  const issues: Issue[] = [];
-  issues.push(...checkDuplicateIds(project));
-  issues.push(...checkIdSafety(project));
-  issues.push(...checkStockReferences(project));
-  issues.push(...checkPhysicalFit(project, stocksById));
-  issues.push(...checkWidthConsistency(project, stocksById));
-  issues.push(...checkFeatureBounds(project, stocksById));
-  issues.push(...checkMeta(project));
-  issues.push(...checkSelectedPlan(project));
-  issues.push(...checkRank(project));
-  issues.push(...checkBarRot(project, raw, stocksById));
-  // v0.7: assemblies / marks（SPECS.md §4c）
-  issues.push(...checkAssemblyContains(project));
-  issues.push(...checkMarks(project));
-  issues.push(...checkMarkVariantCollisions(project));
-  issues.push(...checkQtyDerivation(project, raw));
-  return issues;
-}
+// U-PIPE: 旧 `semanticValidate`（層2の全 check を単一関数で一括実行）はここに
+// あった。D1 によりフェーズ分割（参照フェーズ／式解決／幾何フェーズ）が必要に
+// なったため廃止し、各フェーズの呼び出しは `loadProjectFromRaw` が直接行う
+// （個々の check* 関数は変更していない。呼び出し側の束ね方だけを変えた）。
 
 // ---------------------------------------------------------------------------
 // stocksFile: 外部 stocks 参照（SPECS.md §4）
@@ -1373,8 +1878,29 @@ export function loadStocksFile(baseDir: string, ref: string): StocksFileResult {
     return { stocks: [], issues: schemaIssues, resolvedPath };
   }
 
-  const stocks = ((data.stocks ?? []) as Record<string, any>[]).map(buildStock);
-  return { stocks, issues: schemaIssues, resolvedPath };
+  // U-PIPE: stocksFile 参照先も length/width/thickness に式を書ける（schema.ts の
+  // stockSchema を共用しているため）。参照先は `vars` 区画を持てない（単一ソースの
+  // buildStocksFileSchema が additionalProperties:false で vars を含まない）ので、
+  // env は常に空（`{}`）。これは「vars は同一ファイル内限定」という SPECS.md §4d の
+  // 原則を stocksFile にも一貫させる（裸のリテラル式 "50 + 38" は許可されるが、
+  // $var 参照はここでは常に「未定義の変数」error になる）。
+  //
+  // 参照先の解決 trace（ResolutionTrace）はこの関数の戻り値には含めない
+  // （正本側の trace とパス名前空間が重複しうるため。詳細は報告参照）。
+  const resolutionIssues: Issue[] = [];
+  const stockTrace: ResolutionTrace = {};
+  const stocks = ((data.stocks ?? []) as Record<string, any>[]).map((s, i) =>
+    resolveStock(s, `stocks[${i}]`, {}, resolutionIssues, stockTrace),
+  );
+  const wrappedResolutionIssues = resolutionIssues.map(
+    (i): Issue =>
+      stocksFileIssue(`stocksFile の参照先 '${ref}' の ${i.path}: ${i.message}`, i.severity),
+  );
+  const allIssues = [...schemaIssues, ...wrappedResolutionIssues];
+  if (wrappedResolutionIssues.some((i) => i.severity === "error")) {
+    return { stocks: [], issues: allIssues, resolvedPath };
+  }
+  return { stocks, issues: allIssues, resolvedPath };
 }
 
 /**
@@ -1429,6 +1955,23 @@ export interface LoadOptions {
 /**
  * raw 値に対して構造検証（層1）＋意味検証（層2）を throw なしで実行する。
  *
+ * U-PIPE（SPECS.md §4d:262-273 の10段の解決パイプライン）: 層1（スキーマ検証）の
+ * 後、層2は3フェーズに分かれる（D1）。
+ *
+ * 1. **参照フェーズ**（式解決の前。step 2）: id 重複・ID 安全性・stock 参照・
+ *    assemblies.contains 参照・marks の on/ref 実在＋領域寸法指定の排他・変種面
+ *    ファイル名衝突。marks.ts の `ref` 解決（`refSection`）は参照先の実在を前提と
+ *    し、不在なら例外を投げる設計のため、この実在確認は式解決より先に済ませる
+ *    必要がある。ここに error があれば式解決には進まない（構造検証だけで判定でき、
+ *    数値が未解決（式文字列由来の NaN 混じり）でも安全に判定できるチェックだけを
+ *    実行しているため）。
+ * 2. **式解決**（step 3〜7）: `vars` の依存解決 → settings → stocks → parts/
+ *    features・明示 marks.w/h → marks の `ref` 導出・`rot` 適用・位置式（x/y）。
+ *    `resolveVars` には全フィールド式の `$var` 参照の和集合を `usedElsewhere` と
+ *    して渡す（D3。渡し忘れるとフィールド専用の変数を誤って未使用 hint にする）。
+ * 3. **幾何フェーズ**（式の最終解決値に対してのみ判定できる境界検査。step 8）＋
+ *    値非依存の検査（固定パイプラインの言及外。都合のよい位置に置く）。
+ *
  * severity "error" の Issue が1件でもあれば project は null。
  * 層1でエラーがあればモデル構築・層2には進まない（その時点の Issue のみ返す）。
  */
@@ -1438,6 +1981,23 @@ export function loadProjectFromRaw(
 ): {
   project: Project | null;
   issues: Issue[];
+  /**
+   * 解決に成功した式の「原式 → 解決値」対応表（D2。SPECS.md §4d「解決値の可視化」・
+   * `kidori check --resolved` の `resolvedValues` の元データ）。key は
+   * `formatJsonPath` と同じ path 文法（`vars.<名前>` を含む）。**解決に成功した
+   * 式のみ**を持つ（数値直書きのフィールドは載らない。失敗は `issues` の Issue に
+   * なる）。project が null のとき、または式を1つも使っていないときは空オブジェクト。
+   *
+   * 型上は省略可能にしている（実際の呼び出しでは常に返す。省略可能にしている
+   * 理由: `test/cli/checkHint.test.ts` が `vi.mock` で本関数の戻り値を
+   * `{ project, issues }` の2フィールドだけの literal で差し替えている。D2 は
+   * 「既存呼び出し側は構造的型付けにより壊れない」という前提だったが、これは
+   * 「呼び出し側が本関数の戻り値を読むだけ」の場合にしか成立せず、モックのように
+   * 呼び出し側が戻り値の literal を「構築」する場合は必須フィールドの追加が
+   * 破壊的変更になる。実機確認済みの前提の誤り。ここでは省略可能にすることで
+   * 両立させた（詳細は報告参照）。
+   */
+  resolved?: ResolutionTrace;
 } {
   const normalized = raw ?? {};
   if (!isPlainObject(normalized)) {
@@ -1451,6 +2011,7 @@ export function loadProjectFromRaw(
           severity: "error",
         },
       ],
+      resolved: {},
     };
   }
 
@@ -1474,7 +2035,7 @@ export function loadProjectFromRaw(
     }
   }
   if (externalIssues.some((i) => i.severity === "error")) {
-    return { project: null, issues: externalIssues };
+    return { project: null, issues: externalIssues, resolved: {} };
   }
 
   const stockIds = [
@@ -1484,44 +2045,108 @@ export function loadProjectFromRaw(
 
   const schemaIssues = validateAgainstSchema(normalized, schema);
   if (schemaIssues.some((i) => i.severity === "error")) {
-    return { project: null, issues: [...externalIssues, ...schemaIssues] };
+    return { project: null, issues: [...externalIssues, ...schemaIssues], resolved: {} };
   }
 
-  const project = buildProject(normalized);
-  const mergeIssues = mergeExternalStocks(project, external);
-  const semanticIssues = semanticValidate(project, normalized);
+  // ---- 参照フェーズ（D1。式解決の前）--------------------------------------
+  // `buildProject` は数値フィールドを素朴に `Number(...)` するため式文字列は NaN に
+  // なるが、このフェーズの各 check は id・参照文字列・null 判定しか読まないため
+  // 無害（NaN でも壊れない）。
+  const structuralProject = buildProject(normalized);
+  // id 集合を参照フェーズの判定に反映させるためだけに実行する（戻り値の warning は
+  // 破棄する。最終的な warning は解決後の再実行 [下記] から採り、二重報告を避ける）。
+  mergeExternalStocks(structuralProject, external);
+
+  const referenceIssues: Issue[] = [
+    ...checkDuplicateIds(structuralProject),
+    ...checkIdSafety(structuralProject),
+    ...checkStockReferences(structuralProject),
+    ...checkAssemblyContains(structuralProject),
+    ...checkMarks(structuralProject),
+    ...checkMarkVariantCollisions(structuralProject),
+  ];
+  if (referenceIssues.some((i) => i.severity === "error")) {
+    return {
+      project: null,
+      issues: [...externalIssues, ...schemaIssues, ...referenceIssues],
+      resolved: {},
+    };
+  }
+
+  // ---- 式解決（D1。参照フェーズ通過後。SPECS.md §4d step 3〜7）------------
+  const exprIssues: Issue[] = [];
+  const trace: ResolutionTrace = {};
+
+  const rawVars: Record<string, number | string> = isPlainObject(normalized.vars)
+    ? (normalized.vars as Record<string, number | string>)
+    : {};
+  // D3（最重要の落とし穴）: フィールド式からのみ参照される変数を誤って未使用 hint に
+  // しないよう、全フィールド式の $var 参照の和集合を usedElsewhere として渡す。
+  const usedElsewhere = collectAllFieldVarRefs(normalized);
+  const varsResolution = resolveVars(rawVars, { usedElsewhere });
+  exprIssues.push(...varsResolution.diagnostics.map(issueFromExprDiagnostic));
+  Object.assign(trace, varsResolution.trace);
+  const env: ExprEnv = varsResolution.values;
+
+  const resolvedProject = buildResolvedProject(normalized, env, exprIssues, trace);
+  const mergeIssues = mergeExternalStocks(resolvedProject, external);
+  // step 5〜7: marks.x/y は stocks/parts（marks.w/h 含む）確定後にのみ解決できる。
+  resolveMarkPositions(resolvedProject, normalized, env, exprIssues, trace);
+
+  // ---- 幾何フェーズ（D1。解決後の値でしか判定できない境界検査。step 8）------
+  const stocksById = new Map(resolvedProject.stocks.map((s) => [s.id, s]));
+  const geometryIssues: Issue[] = [
+    ...checkPhysicalFit(resolvedProject, stocksById),
+    ...checkWidthConsistency(resolvedProject, stocksById),
+    ...checkFeatureBounds(resolvedProject, stocksById),
+    ...checkMarksGeometry(resolvedProject),
+  ];
+  // 値非依存の検査（固定パイプラインの言及外。D1「都合のよい側に置いてよい」の5項目）。
+  const otherIssues: Issue[] = [
+    ...checkMeta(resolvedProject),
+    ...checkSelectedPlan(resolvedProject),
+    ...checkRank(resolvedProject),
+    ...checkBarRot(resolvedProject, normalized, stocksById),
+    ...checkQtyDerivation(resolvedProject, normalized),
+  ];
 
   const allIssues = [
     ...externalIssues,
     ...schemaIssues,
+    ...referenceIssues, // 常に空のはず（error なら既に return 済み）。念のため保持。
     ...mergeIssues,
-    ...semanticIssues,
+    ...exprIssues,
+    ...geometryIssues,
+    ...otherIssues,
   ];
   if (allIssues.some((i) => i.severity === "error")) {
-    return { project: null, issues: allIssues };
+    return { project: null, issues: allIssues, resolved: {} };
   }
-  return { project, issues: allIssues };
+  return { project: resolvedProject, issues: allIssues, resolved: trace };
 }
 
 /**
  * kidori ファイル（正本）を読み込み、検証済みの Project を返す。
  *
- * パイプライン: raw 読込 → stocksFile 解決 → 層1（スキーマ検証） →
- * モデル構築＋外部 stocks マージ → 層2（意味検証）。
+ * パイプライン: raw 読込 → stocksFile 解決 → 層1（スキーマ検証） → 参照フェーズ →
+ * 式解決 → 幾何フェーズ（`loadProjectFromRaw` 参照）。
  *
- * @returns `{ project, warnings }`。warnings には層2で検出された warning のみが
- *   含まれる（error が1件でもあれば ProjectError を送出するため）。
+ * @returns `{ project, warnings, resolved }`。warnings には層2で検出された
+ *   warning のみが含まれる（error が1件でもあれば ProjectError を送出するため）。
+ *   `resolved` は D2 の解決 trace（`loadProjectFromRaw` の同名フィールド参照）。
  * @throws ProjectError 層1または層2で severity "error" の Issue が1件以上
  *   検出された場合。`ProjectError.issues` には検出された全 Issue
  *   （error・warning 双方）を含む。
  */
-export function loadProject(filePath: string): { project: Project; warnings: Issue[] } {
+export function loadProject(
+  filePath: string,
+): { project: Project; warnings: Issue[]; resolved: ResolutionTrace } {
   const raw = readRaw(filePath);
-  const { project, issues } = loadProjectFromRaw(raw, {
+  const { project, issues, resolved } = loadProjectFromRaw(raw, {
     baseDir: dirname(resolve(filePath)),
   });
   if (project === null) {
     throw new ProjectError(issues);
   }
-  return { project, warnings: issues };
+  return { project, warnings: issues, resolved: resolved ?? {} };
 }

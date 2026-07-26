@@ -300,6 +300,42 @@ describe("loadStocksFile / baseDir 未指定", () => {
     expect(result.resolvedPath).toBe(path.join(dir, "stocks.yaml"));
   });
 
+  it("U-PIPE: 参照先の length 等にも文脈非依存式（vars 不使用）を書ける", () => {
+    write(
+      "stocks.yaml",
+      'stocks:\n  - { id: b1, label: 棒, kind: bar, length: "1800 + 20", width: 89, thickness: 19 }\n',
+    );
+    const p = writeProject(`
+stocksFile: ./stocks.yaml
+meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+stocks: []
+parts:
+  - { id: p1, label: 部材, qty: 1, stock: b1, length: 500 }
+`);
+    const { project } = loadProject(p);
+    expect(project.stocks[0].length).toBe(1820);
+  });
+
+  it("U-PIPE: 参照先は vars 区画を持てないため $var 参照は未定義エラーになる（env は常に空）", () => {
+    write(
+      "stocks.yaml",
+      'stocks:\n  - { id: b1, label: 棒, kind: bar, length: "$foo", width: 89, thickness: 19 }\n',
+    );
+    const p = writeProject(`
+stocksFile: ./stocks.yaml
+meta: { project: テスト, units: mm, schemaVersion: "0.4" }
+stocks: []
+parts:
+  - { id: p1, label: 部材, qty: 1, stock: b1, length: 500 }
+`);
+    const err = loadError(p);
+    const issue = err.issues.find((i) => i.path === "stocksFile");
+    expect(issue).toBeDefined();
+    expect(issue!.severity).toBe("error");
+    expect(issue!.message).toContain("未定義の変数です");
+    expect(issue!.message).toContain("stocks[0].length");
+  });
+
   it("baseDir 未指定の loadProjectFromRaw は warning を出して参照を無視する", () => {
     const { project, issues } = loadProjectFromRaw({
       stocksFile: "./stocks.yaml",
